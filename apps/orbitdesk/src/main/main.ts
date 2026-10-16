@@ -16,7 +16,7 @@ let disposeIpc: (() => void) | undefined;
 app.setAppUserModelId("ai.orbitdesk.studio");
 
 app.whenReady().then(async () => {
-  const preloadPath = join(currentDirectory, "../preload/index.js");
+  const preloadPath = join(currentDirectory, "../preload/index.cjs");
   const rendererEntry = process.env.VITE_DEV_SERVER_URL ?? join(currentDirectory, "../../dist/index.html");
   const store = new StateStore(
     join(app.getPath("userData"), "orbitdesk-state.json"),

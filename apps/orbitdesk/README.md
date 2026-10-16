@@ -51,11 +51,13 @@ npm install
 npm run dev
 ```
 
-Web-only UI preview with deterministic demonstration data:
+Web-only UI preview:
 
 ```bash
 npm run dev:web
 ```
+
+The web preview does not simulate remote pages, task execution, or downloads. Its Doubao and Dola cards open the real official URLs in a new browser tab because third-party authenticated pages cannot be embedded safely in the Arena preview. Real in-app browsing requires the Electron desktop shell.
 
 Validation:
 
@@ -71,7 +73,7 @@ Windows installer:
 npm run package:win
 ```
 
-The Linux Arena environment can build and test the renderer/main TypeScript, but it cannot establish Windows Electron runtime or NSIS installer behavior. Those must be validated on Windows before release.
+The NSIS installer is built on a Windows GitHub Actions runner. Before wider release, the packaged application still requires an interactive Windows smoke test covering login, navigation, site permissions, and the current Doubao/Dola page structure. Version 0.1.1 uses a CommonJS sandbox preload and refuses to silently fall back to preview data if the desktop bridge fails.
 
 ## Adapter calibration checklist
 

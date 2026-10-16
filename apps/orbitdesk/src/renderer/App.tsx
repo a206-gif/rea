@@ -53,6 +53,7 @@ import { createDemoApi } from "./demo-api";
 const demoApi = createDemoApi();
 const api: OrbitApi = window.orbit ?? demoApi;
 const isDesktop = Boolean(window.orbit);
+const desktopBridgeMissing = window.location.protocol === "file:" && !window.orbit;
 
 type PageId = "overview" | "workspaces" | "tasks" | "downloads" | "adapters" | "settings";
 
@@ -66,6 +67,13 @@ const navigation: Array<{ id: PageId; label: string; icon: LucideIcon }> = [
 ];
 
 export function App() {
+  if (desktopBridgeMissing) {
+    return <FatalState message="桌面安全桥接未加载，已阻止进入演示模式。请安装 0.1.1 或更高版本。" />;
+  }
+  return <ConnectedApp />;
+}
+
+function ConnectedApp() {
   const [state, setState] = useState<StateSnapshot>();
   const [error, setError] = useState<string>();
   const workspaceId = new URLSearchParams(window.location.search).get("workspace");
@@ -105,18 +113,32 @@ function Dashboard({ state }: { state: StateSnapshot }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  const newTask = () => {
+    if (!isDesktop) {
+      setToast("网页预览不执行虚拟任务；请安装 Windows 桌面版并登录真实官网");
+      return;
+    }
+    setTaskModal(true);
+  };
+
   const openWorkspace = (workspaceId: string) => {
     if (!isDesktop) {
-      window.location.search = `workspace=${encodeURIComponent(workspaceId)}`;
+      const workspace = state.workspaces.find((item) => item.id === workspaceId);
+      if (!workspace) {
+        setToast("找不到浏览器实例");
+        return;
+      }
+      window.open(workspace.currentUrl ?? workspace.startUrl, "_blank", "noopener,noreferrer");
+      setToast(`已在新标签页打开 ${adapterFor(workspace.siteId).name} 官方网页`);
       return;
     }
     void run(() => api.openWorkspace(workspaceId));
   };
 
   const content = (() => {
-    if (page === "overview") return <Overview state={state} query={query} onOpen={openWorkspace} onNewTask={() => setTaskModal(true)} onNewWorkspace={() => setWorkspaceModal(true)} onPage={setPage} onTaskAction={run} />;
+    if (page === "overview") return <Overview state={state} query={query} onOpen={openWorkspace} onNewTask={newTask} onNewWorkspace={() => setWorkspaceModal(true)} onPage={setPage} onTaskAction={run} />;
     if (page === "workspaces") return <WorkspacePage state={state} onOpen={openWorkspace} onNew={() => setWorkspaceModal(true)} />;
-    if (page === "tasks") return <TaskPage state={state} onNew={() => setTaskModal(true)} onAction={run} />;
+    if (page === "tasks") return <TaskPage state={state} onNew={newTask} onAction={run} />;
     if (page === "downloads") return <DownloadsPage state={state} onReveal={(id) => run(() => api.revealDownload(id))} />;
     if (page === "adapters") return <AdaptersPage state={state} />;
     return <SettingsPage state={state} onSave={(patch) => run(() => api.updateSettings(patch), "设置已保存")} />;
@@ -150,9 +172,9 @@ function Dashboard({ state }: { state: StateSnapshot }) {
         <header className="topbar">
           <div className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工作区、提示词或文件…" /><kbd>⌘ K</kbd></div>
           <div className="topbar-actions">
-            {!isDesktop && <span className="preview-pill"><Sparkles size={14} />网页演示数据</span>}
+            {!isDesktop && <span className="preview-pill"><ExternalLink size={14} />网页预览 · 点击实例打开真实官网</span>}
             <button className="icon-button" aria-label="通知"><Bell size={18} /><i /></button>
-            <button className="primary-button compact" onClick={() => setTaskModal(true)}><Plus size={17} />新建任务</button>
+            <button className="primary-button compact" onClick={newTask}><Plus size={17} />{isDesktop ? "新建任务" : "任务需桌面版"}</button>
           </div>
         </header>
         <div className="content-stage">{content}</div>
@@ -213,7 +235,8 @@ function WorkspaceCard({ workspace, state, onOpen }: { workspace: Workspace; sta
   const adapter = adapterFor(workspace.siteId);
   const profile = state.profiles.find((item) => item.id === workspace.profileId);
   const active = state.tasks.filter((task) => task.workspaceId === workspace.id && !["completed", "cancelled", "failed"].includes(task.status));
-  return <article className="workspace-card"><div className="workspace-card-head"><div className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</div><div><b>{workspace.name}</b><span>{adapter.name} · {profile?.name ?? "独立档案"}</span></div><button className="mini-menu"><MoreHorizontal size={18} /></button></div><div className="browser-mini"><div className="browser-mini-bar"><i /><i /><i /><span>{workspace.currentUrl ?? workspace.startUrl}</span></div><div className="browser-mini-body"><div className="mini-glow" style={{ background: adapter.accent }} /><span>{adapter.shortName}</span><small>{workspace.status === "working" ? "任务执行中" : workspace.status === "ready" ? "页面已就绪" : "窗口已休眠"}</small></div></div><div className="workspace-card-foot"><div><StatusDot status={workspace.status} />{workspaceStatusLabel(workspace.status)}<span className="divider" />{active.length} 个任务</div><button onClick={onOpen}>打开<ExternalLink size={14} /></button></div></article>;
+  const targetUrl = workspace.currentUrl ?? workspace.startUrl;
+  return <article className="workspace-card"><div className="workspace-card-head"><div className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</div><div><b>{workspace.name}</b><span>{adapter.name} · {profile?.name ?? "独立档案"}</span></div><button className="mini-menu"><MoreHorizontal size={18} /></button></div><div className="browser-mini"><div className="browser-mini-bar"><i /><i /><i /><span>{targetUrl}</span></div><div className="browser-mini-body"><div className="mini-glow" style={{ background: adapter.accent }} /><span>{adapter.shortName}</span><small>{workspace.status === "working" ? "任务执行中" : workspace.status === "ready" ? "页面已就绪" : "窗口已休眠"}</small></div></div><div className="workspace-card-foot"><div><StatusDot status={workspace.status} />{workspaceStatusLabel(workspace.status)}<span className="divider" />{active.length} 个任务</div>{isDesktop ? <button onClick={onOpen}>打开<ExternalLink size={14} /></button> : <a href={targetUrl} target="_blank" rel="noreferrer">打开真实官网<ExternalLink size={14} /></a>}</div></article>;
 }
 
 function TaskRow({ task, state, onAction }: { task: GenerationTask; state: StateSnapshot; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
@@ -273,12 +296,13 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
 
   if (!workspace) return <FatalState message="找不到浏览器实例" />;
   const adapter = adapterFor(workspace.siteId);
-  return <div className="workspace-window"><header className="workspace-toolbar"><div className="workspace-brand"><div className="brand-symbol small"><span>O</span></div><b>OrbitDesk</b></div><div className="browser-buttons"><button onClick={() => void api.browserCommand(workspaceId, "back")}><ArrowLeft size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "forward")}><ArrowRight size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "reload")}><RotateCw size={15} /></button><button onClick={() => void api.browserCommand(workspaceId, "home")}><Home size={15} /></button></div><div className="url-bar"><ShieldCheck size={14} /><span>{url}</span></div><div className="workspace-status"><StatusDot status={workspace.status} />{status}</div><button className="toolbar-queue"><ListTodo size={16} />{tasks.length}<ChevronRight size={15} /></button></header><div className="workspace-info-bar"><div><span className="site-mark tiny" style={{ background: adapter.accent }}>{adapter.shortName}</span><b>{workspace.name}</b><span>{state.profiles.find((p) => p.id === workspace.profileId)?.name}</span></div><div><span>30 秒任务</span><b>{tasks.length}</b><span className="divider" />下载目录已连接</div></div><div className="browser-surface" ref={surfaceRef}>{!isDesktop && <MockRemoteSite workspace={workspace} tasks={tasks} />}</div></div>;
+  return <div className="workspace-window"><header className="workspace-toolbar"><div className="workspace-brand"><div className="brand-symbol small"><span>O</span></div><b>OrbitDesk</b></div><div className="browser-buttons"><button onClick={() => void api.browserCommand(workspaceId, "back")}><ArrowLeft size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "forward")}><ArrowRight size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "reload")}><RotateCw size={15} /></button><button onClick={() => void api.browserCommand(workspaceId, "home")}><Home size={15} /></button></div><div className="url-bar"><ShieldCheck size={14} /><span>{url}</span></div><div className="workspace-status"><StatusDot status={workspace.status} />{status}</div><button className="toolbar-queue"><ListTodo size={16} />{tasks.length}<ChevronRight size={15} /></button></header><div className="workspace-info-bar"><div><span className="site-mark tiny" style={{ background: adapter.accent }}>{adapter.shortName}</span><b>{workspace.name}</b><span>{state.profiles.find((p) => p.id === workspace.profileId)?.name}</span></div><div><span>30 秒任务</span><b>{tasks.length}</b><span className="divider" />下载目录已连接</div></div><div className="browser-surface" ref={surfaceRef}>{!isDesktop && <ExternalSiteNotice workspace={workspace} />}</div></div>;
 }
 
-function MockRemoteSite({ workspace, tasks }: { workspace: Workspace; tasks: GenerationTask[] }) {
+function ExternalSiteNotice({ workspace }: { workspace: Workspace }) {
   const adapter = adapterFor(workspace.siteId);
-  return <div className="mock-site"><aside><div className="mock-logo" style={{ background: adapter.accent }}>{adapter.shortName}</div><i /><i /><i /><i /></aside><main><div className="mock-site-top"><span /><span /><div /></div><div className="mock-canvas"><div className="mock-hero" style={{ background: `linear-gradient(135deg, ${adapter.accent}, #172f27)` }}><Sparkles size={26} /><h2>{adapter.name} 创作页面</h2><p>Electron 桌面版将在此处加载真实官方网页</p></div><div className="mock-input"><span>{tasks[0]?.prompt ?? "输入你的创作描述…"}</span><button style={{ background: adapter.accent }}><ArrowUpRight size={18} /></button></div><div className="mock-options"><span className="active">视频</span><span>30 秒</span><span>16:9</span><span>高清</span></div></div></main></div>;
+  const targetUrl = workspace.currentUrl ?? workspace.startUrl;
+  return <div className="external-site-notice"><div className="site-mark large" style={{ background: adapter.accent }}>{adapter.shortName}</div><h2>{adapter.name} 官方网页</h2><p>网页预览不能把第三方登录页面嵌入 Arena。这里不再显示模拟站点；请直接打开真实官网。</p><code>{targetUrl}</code><a className="primary-button" href={targetUrl} target="_blank" rel="noreferrer"><ExternalLink size={17} />打开真实官网</a><small>Windows 桌面版会在隔离的 Electron 浏览器窗口中直接加载该地址。</small></div>;
 }
 
 function TaskModal({ state, onClose, onSubmit }: { state: StateSnapshot; onClose: () => void; onSubmit: (input: CreateTaskInput) => Promise<void> }) {
