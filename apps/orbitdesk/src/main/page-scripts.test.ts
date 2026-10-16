@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { adapterFor } from "../adapters/site-adapters";
 import type { GenerationTask } from "../shared/contracts";
-import { buildSubmitScript } from "./page-scripts";
+import { buildDurationSelectionScript, buildSubmitScript } from "./page-scripts";
 
 const baseTask: GenerationTask = {
   id: "task_test",
@@ -27,8 +27,20 @@ describe("page script construction", () => {
     expect(script).not.toContain(`const config = {${prompt}`);
   });
 
-  it("fails closed when the 30 second control cannot be located", () => {
+  it("opens Dola's visible duration menu and verifies the 30 second choice", () => {
+    const script = buildDurationSelectionScript(adapterFor("dola"));
+    expect(script).toContain("selectDolaModel25");
+    expect(script).toContain("已打开模型菜单，但没有找到 Dola 模型 2.5");
+    expect(script).toContain("trigger.click()");
+    expect(script).toContain("option.click()");
+    expect(script).toContain("无法确认网页已切换到 30 秒");
+    expect(script).toContain("https://www.dola.com/chat/");
+    expect(() => new Function(`return ${script};`)).not.toThrow();
+  });
+
+  it("fails closed when the 30 second control cannot be located or verified", () => {
     const script = buildSubmitScript(adapterFor("dola"), baseTask);
-    expect(script).toContain("页面没有可确认的 30 秒选项；任务未提交");
+    expect(script).toContain("没有找到 Dola 网页内的时长下拉控件；未执行提交");
+    expect(script).toContain("点击了 30 秒选项，但无法确认网页已切换到 30 秒；未执行提交");
   });
 });

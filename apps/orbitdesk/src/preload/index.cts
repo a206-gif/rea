@@ -25,6 +25,8 @@ const api: OrbitApi = {
     ipcRenderer.invoke("browser:bounds", workspaceId, bounds),
   browserCommand: (workspaceId: string, command: BrowserCommand) =>
     ipcRenderer.invoke("browser:command", workspaceId, command),
+  selectThirtySeconds: (workspaceId: string) =>
+    ipcRenderer.invoke("browser:select-thirty", workspaceId),
   downloadAsset: (assetId: string) => ipcRenderer.invoke("asset:download", assetId),
   revealDownload: (downloadId: string) => ipcRenderer.invoke("download:reveal", downloadId),
   onStateChanged(callback: (state: StateSnapshot) => void) {

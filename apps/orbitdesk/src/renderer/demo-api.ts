@@ -22,7 +22,7 @@ export function createDemoApi(): OrbitApi {
     ],
     workspaces: [
       { id: "workspace_doubao", name: "豆包官方网站", siteId: "doubao", profileId: "profile_primary", startUrl: "https://www.doubao.com/", status: "offline", createdAt: iso(-8) },
-      { id: "workspace_dola", name: "Dola 官方网站", siteId: "dola", profileId: "profile_primary", startUrl: "https://www.dola.com/", status: "offline", createdAt: iso(-7) },
+      { id: "workspace_dola", name: "Dola 官方网站", siteId: "dola", profileId: "profile_primary", startUrl: "https://www.dola.com/chat/", status: "offline", createdAt: iso(-7) },
     ],
     tasks: [],
     assets: [],
@@ -87,8 +87,11 @@ export function createDemoApi(): OrbitApi {
     },
     async setBrowserBounds(_workspaceId: string, _bounds: BrowserBounds) {},
     async browserCommand(workspaceId: string, command: BrowserCommand) {
-      const event: WorkspaceEvent = { workspaceId, type: "automation", value: `网页演示：${command}`, at: new Date().toISOString() };
+      const event: WorkspaceEvent = { workspaceId, type: "automation", value: `网页预览：${command}`, at: new Date().toISOString() };
       for (const listener of workspaceListeners) listener(event);
+    },
+    async selectThirtySeconds(_workspaceId: string) {
+      throw new Error("网页预览不能操作第三方页面；请在 Windows 桌面版中使用网页内 30 秒功能");
     },
     async downloadAsset(_assetId: string) { throw new Error("网页预览没有虚拟下载"); },
     async revealDownload(_downloadId: string) { throw new Error("网页预览没有本机下载目录"); },

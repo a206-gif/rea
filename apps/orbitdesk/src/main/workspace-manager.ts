@@ -10,12 +10,14 @@ import { adapterFor, isAllowedSiteUrl } from "../adapters/site-adapters.js";
 import type {
   BrowserBounds,
   BrowserCommand,
+  BrowserPageActionResult,
   DetectedAsset,
   Workspace,
   WorkspaceEvent,
 } from "../shared/contracts.js";
 import type { AutomationWorkspacePort } from "./automation-engine.js";
 import type { DownloadManager } from "./download-manager.js";
+import { buildDurationSelectionScript } from "./page-scripts.js";
 import type { StateStore } from "./store.js";
 
 interface WorkspaceRuntime {
@@ -70,8 +72,8 @@ export class WorkspaceManager extends EventEmitter implements AutomationWorkspac
     const window = new BrowserWindow({
       width: 1380,
       height: 900,
-      minWidth: 980,
-      minHeight: 680,
+      minWidth: 1120,
+      minHeight: 720,
       backgroundColor: "#f6f7f4",
       title: `${workspace.name} · OrbitDesk`,
       show: false,
@@ -133,6 +135,15 @@ export class WorkspaceManager extends EventEmitter implements AutomationWorkspac
     if (command === "forward" && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
     if (command === "reload") contents.reload();
     if (command === "home") void contents.loadURL(workspace.startUrl);
+  }
+
+  async selectThirtySeconds(workspaceId: string): Promise<BrowserPageActionResult> {
+    const workspace = this.#store.requireWorkspace(workspaceId);
+    await this.waitUntilReady(workspaceId, 30_000);
+    return this.evaluate<BrowserPageActionResult>(
+      workspaceId,
+      buildDurationSelectionScript(adapterFor(workspace.siteId)),
+    );
   }
 
   async waitUntilReady(workspaceId: string, timeoutMs: number): Promise<void> {

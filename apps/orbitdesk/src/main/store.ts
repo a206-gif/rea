@@ -27,6 +27,10 @@ export class StateStore {
     this.#state = this.#load(downloadDirectory);
     this.#state.workspaces = this.#state.workspaces.map((workspace) => ({
       ...workspace,
+      startUrl:
+        workspace.siteId === "dola" && workspace.startUrl === "https://www.dola.com/"
+          ? adapterFor("dola").baseUrl
+          : workspace.startUrl,
       status: "offline",
       lastError: undefined,
     }));

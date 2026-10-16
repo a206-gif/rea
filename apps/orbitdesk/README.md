@@ -6,9 +6,11 @@ OrbitDesk is a **clean-room**, Windows-first Electron desktop application for ma
 
 - Unlimited workspace records and independently opened Electron windows.
 - Persistent login profiles backed by Electron `persist:` session partitions.
-- Built-in adapters for `https://www.doubao.com/` and `https://www.dola.com/`.
+- Built-in adapters for `https://www.doubao.com/` and the Dola creation page at `https://www.dola.com/chat/`.
+- A dark multi-pane creation workspace with instance list, embedded official page, 30-second automation dock, and result sidebar.
 - Sequential task queues per workspace with bounded cross-workspace concurrency.
-- Strict 30-second video option selection: if a visible 30-second control is not found, submission stops.
+- Direct Dola 30-second control: switch Dola's visible model selector to `2.5`, open the page's own duration menu, click its exact `30s` option, verify both page changes, and only then submit.
+- Strict fail-closed behavior: if the visible 30-second control cannot be found or verified, submission stops.
 - Image/video completion detection from the currently visible authorized page.
 - Electron download integration, Windows-safe filenames, progress records, and reveal-in-folder.
 - Automatic pause on CAPTCHA, human-verification, rate-limit, membership, or quota text.
@@ -73,17 +75,18 @@ Windows installer:
 npm run package:win
 ```
 
-The NSIS installer is built on a Windows GitHub Actions runner. Before wider release, the packaged application still requires an interactive Windows smoke test covering login, navigation, site permissions, and the current Doubao/Dola page structure. Version 0.1.1 uses a CommonJS sandbox preload and refuses to silently fall back to preview data if the desktop bridge fails.
+The NSIS installer is built on a Windows GitHub Actions runner. Before wider release, the packaged application still requires an interactive Windows smoke test covering login, navigation, site permissions, and the current Doubao/Dola page structure. Version 0.2.0 uses a CommonJS sandbox preload, refuses to silently fall back to preview data, and adds the verified visible-UI Dola `30s` sequence.
 
 ## Adapter calibration checklist
 
 1. Open one workspace and manually sign in to the official site.
-2. Navigate to the actual image/video generation page.
-3. Confirm that the prompt input, video mode, exact `30 秒` control, and generate button are visible.
-4. Submit one low-cost test while keeping the page visible.
-5. Verify that the result card exposes a real `video`, `img`, or download link URL.
-6. If selectors fail, update only `src/adapters/site-adapters.ts`; do not add private endpoint calls.
-7. Re-run the local test suite and one manual authorized task.
+2. For Dola, remain on `https://www.dola.com/chat/` and activate its visible video-generation composer.
+3. Use **模型 2.5 · 30s** once and confirm that Dola's own model button changes from `2.0 Fast` (or another value) to `2.5`, then its duration button changes from `10s` to `30s`.
+4. Confirm that the prompt input, model `2.5`, exact `30s` option, and generate button are visible.
+5. Submit one low-cost test while keeping the page visible.
+6. Verify that the result card exposes a real `video`, `img`, or download link URL.
+7. If selectors fail, update only `src/adapters/site-adapters.ts`; do not add private endpoint calls.
+8. Re-run the local test suite and one manual authorized task.
 
 ## Privacy and operations
 

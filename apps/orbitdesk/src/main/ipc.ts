@@ -41,6 +41,9 @@ export function registerIpc(
     if (!["back", "forward", "reload", "home"].includes(command)) throw new Error("浏览器命令无效");
     workspaces.command(requireId(workspaceId), command);
   });
+  ipcMain.handle("browser:select-thirty", (_event, workspaceId: string) =>
+    workspaces.selectThirtySeconds(requireId(workspaceId)),
+  );
   ipcMain.handle("asset:download", async (_event, assetId: string) => {
     const asset = store.requireAsset(requireId(assetId));
     await workspaces.requestDownload(asset);
@@ -75,6 +78,7 @@ export function registerIpc(
       "settings:update",
       "browser:bounds",
       "browser:command",
+      "browser:select-thirty",
       "asset:download",
       "download:reveal",
     ]) {

@@ -141,6 +141,12 @@ export interface BrowserBounds {
 
 export type BrowserCommand = "back" | "forward" | "reload" | "home";
 
+export interface BrowserPageActionResult {
+  ok: boolean;
+  stage: "blocked" | "mode" | "duration" | "ready";
+  message: string;
+}
+
 export interface WorkspaceEvent {
   workspaceId: string;
   type: "status" | "url" | "title" | "automation";
@@ -161,6 +167,7 @@ export interface OrbitApi {
   updateSettings(settings: Partial<AppSettings>): Promise<AppSettings>;
   setBrowserBounds(workspaceId: string, bounds: BrowserBounds): Promise<void>;
   browserCommand(workspaceId: string, command: BrowserCommand): Promise<void>;
+  selectThirtySeconds(workspaceId: string): Promise<BrowserPageActionResult>;
   downloadAsset(assetId: string): Promise<void>;
   revealDownload(downloadId: string): Promise<void>;
   onStateChanged(callback: (state: StateSnapshot) => void): () => void;

@@ -272,7 +272,13 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
   const workspace = state.workspaces.find((item) => item.id === workspaceId);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const [url, setUrl] = useState(workspace?.currentUrl ?? workspace?.startUrl ?? "");
-  const [status, setStatus] = useState("正在连接页面");
+  const [status, setStatus] = useState("正在连接真实网页");
+  const [prompt, setPrompt] = useState("");
+  const [quantity, setQuantity] = useState(1);
+  const [autoDownload, setAutoDownload] = useState(true);
+  const [working, setWorking] = useState(false);
+  const [panelMessage, setPanelMessage] = useState("Dola 模型 2.5 · 网页内 30 秒控制器已就绪");
+  const [assetTab, setAssetTab] = useState<AssetKind>("video");
   const tasks = state.tasks.filter((task) => task.workspaceId === workspaceId && !["completed", "cancelled"].includes(task.status));
 
   useEffect(() => api.onWorkspaceEvent((event) => {
@@ -296,7 +302,106 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
 
   if (!workspace) return <FatalState message="找不到浏览器实例" />;
   const adapter = adapterFor(workspace.siteId);
-  return <div className="workspace-window"><header className="workspace-toolbar"><div className="workspace-brand"><div className="brand-symbol small"><span>O</span></div><b>OrbitDesk</b></div><div className="browser-buttons"><button onClick={() => void api.browserCommand(workspaceId, "back")}><ArrowLeft size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "forward")}><ArrowRight size={16} /></button><button onClick={() => void api.browserCommand(workspaceId, "reload")}><RotateCw size={15} /></button><button onClick={() => void api.browserCommand(workspaceId, "home")}><Home size={15} /></button></div><div className="url-bar"><ShieldCheck size={14} /><span>{url}</span></div><div className="workspace-status"><StatusDot status={workspace.status} />{status}</div><button className="toolbar-queue"><ListTodo size={16} />{tasks.length}<ChevronRight size={15} /></button></header><div className="workspace-info-bar"><div><span className="site-mark tiny" style={{ background: adapter.accent }}>{adapter.shortName}</span><b>{workspace.name}</b><span>{state.profiles.find((p) => p.id === workspace.profileId)?.name}</span></div><div><span>30 秒任务</span><b>{tasks.length}</b><span className="divider" />下载目录已连接</div></div><div className="browser-surface" ref={surfaceRef}>{!isDesktop && <ExternalSiteNotice workspace={workspace} />}</div></div>;
+  const siblingWorkspaces = state.workspaces.filter((item) => item.siteId === workspace.siteId);
+  const visibleAssets = state.assets.filter((asset) => asset.workspaceId === workspaceId && asset.kind === assetTab);
+  const workspaceDownloads = state.downloads.filter((download) => download.workspaceId === workspaceId);
+
+  const selectThirty = async () => {
+    if (!isDesktop) {
+      setPanelMessage("网页预览不能操作第三方网页，请使用 Windows 桌面版");
+      return false;
+    }
+    setWorking(true);
+    setPanelMessage("正在网页内切换 Dola 模型 2.5，并选择 30s…");
+    try {
+      const result = await api.selectThirtySeconds(workspaceId);
+      setPanelMessage(result.message);
+      return result.ok;
+    } catch (reason) {
+      setPanelMessage(errorMessage(reason));
+      return false;
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  const submitThirtySecondTasks = async () => {
+    if (!prompt.trim()) {
+      setPanelMessage("请先填写视频提示词");
+      return;
+    }
+    setWorking(true);
+    setPanelMessage("正在通过 Dola 网页选择模型 2.5 和 30s…");
+    try {
+      const result = await api.selectThirtySeconds(workspaceId);
+      if (!result.ok) {
+        setPanelMessage(result.message);
+        return;
+      }
+      await api.createTasks({
+        workspaceId,
+        prompt: prompt.trim(),
+        kind: "video",
+        durationSeconds: 30,
+        quantity,
+        autoDownload,
+      });
+      setPrompt("");
+      setPanelMessage(`已锁定 Dola 模型 2.5 / 30s，并加入 ${quantity} 个自动化任务`);
+    } catch (reason) {
+      setPanelMessage(errorMessage(reason));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return <div className="studio-window">
+    <header className="studio-topbar">
+      <div className="studio-title"><div className="studio-logo">O</div><b>OrbitDesk</b><span>30s Studio</span></div>
+      <div className="studio-instance-select">{adapter.name} ({siblingWorkspaces.length})<ChevronRight size={13} /></div>
+      <div className="studio-browser-buttons"><button onClick={() => void api.browserCommand(workspaceId, "back")}><ArrowLeft size={15} /></button><button onClick={() => void api.browserCommand(workspaceId, "forward")}><ArrowRight size={15} /></button><button onClick={() => void api.browserCommand(workspaceId, "reload")}><RotateCw size={14} /></button><button onClick={() => void api.browserCommand(workspaceId, "home")}><Home size={14} /></button></div>
+      <div className="studio-address"><ShieldCheck size={13} /><span>{url}</span></div>
+      <div className="studio-page-state"><StatusDot status={workspace.status} /><span>{status}</span></div>
+    </header>
+    <div className="studio-layout">
+      <nav className="studio-rail" aria-label="工作区工具">
+        <div className="active"><Sparkles size={17} /><span>创作</span></div>
+        <div><ImageIcon size={17} /><span>资产</span></div>
+        <div><PanelsTopLeft size={17} /><span>适配</span></div>
+        <div><ListTodo size={17} /><span>任务</span></div>
+        <div className="rail-spacer" />
+        <div><Settings size={17} /><span>设置</span></div>
+      </nav>
+      <aside className="studio-instances">
+        <div className="instance-search"><Search size={13} /><span>搜索实例名称…</span></div>
+        <div className="instance-group-title"><span><i />分组 1</span><b>{siblingWorkspaces.length}</b></div>
+        <div className="instance-list">
+          {siblingWorkspaces.map((item, index) => <button key={item.id} className={item.id === workspaceId ? "active" : ""} onClick={() => void api.openWorkspace(item.id)}><span className="instance-avatar" style={{ background: adapter.accent }}>{adapter.shortName}</span><span><b>{adapter.name}-{index}</b><small>{item.id === workspaceId ? "当前真实网页" : item.name}</small></span><i className={item.status === "offline" ? "off" : "on"}>{item.status === "offline" ? "关" : "开"}</i></button>)}
+        </div>
+        <div className="instance-security"><ShieldCheck size={14} /><span>登录状态按档案隔离保存</span></div>
+      </aside>
+      <main className="studio-center">
+        <div className="browser-surface" ref={surfaceRef}>{!isDesktop && <ExternalSiteNotice workspace={workspace} />}</div>
+        <section className="automation-dock">
+          <div className="dock-status"><span>{panelMessage}</span><div><b>运行 {tasks.length}</b><i />完成 {state.tasks.filter((task) => task.workspaceId === workspaceId && task.status === "completed").length}</div></div>
+          <div className="dock-content">
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入分镜或视频描述；任务会直接操作当前 Dola 网页的 30s 选项…" />
+            <div className="dock-options">
+              <label>数量<input type="number" min={1} max={20} value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(20, Number(event.target.value))))} /></label>
+              <label className="dock-check"><input type="checkbox" checked={autoDownload} onChange={(event) => setAutoDownload(event.target.checked)} />自动下载</label>
+              <button className="duration-button" disabled={working} onClick={() => void selectThirty()}><Clock3 size={15} />模型 2.5 · 30s</button>
+              <button className="automation-button" disabled={working || !prompt.trim()} onClick={() => void submitThirtySecondTasks()}><Sparkles size={16} />{working ? "执行中…" : "分镜自动化"}</button>
+            </div>
+          </div>
+        </section>
+      </main>
+      <aside className="studio-assets">
+        <div className="asset-tabs"><button className={assetTab === "video" ? "active" : ""} onClick={() => setAssetTab("video")}>视频</button><button className={assetTab === "image" ? "active" : ""} onClick={() => setAssetTab("image")}>图片</button></div>
+        <div className="asset-list">{visibleAssets.length ? visibleAssets.map((asset) => <article key={asset.id}><div>{asset.kind === "video" ? <Video size={18} /> : <ImageIcon size={18} />}</div><b>{asset.kind === "video" ? `${Math.round(asset.durationSeconds ?? 30)}s 视频` : "生成图片"}</b><small>{new Date(asset.detectedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</small><button onClick={() => void api.downloadAsset(asset.id)}><Download size={13} />下载</button></article>) : <div className="asset-empty"><HardDriveDownload size={25} /><span>暂无提取资源</span><small>生成完成后自动出现在这里</small></div>}</div>
+        <div className="asset-footer"><span>{workspaceDownloads.length} 个下载记录</span>{workspaceDownloads.find((item) => item.status === "completed") && <button onClick={() => { const item = workspaceDownloads.find((download) => download.status === "completed"); if (item) void api.revealDownload(item.id); }}><FolderOpen size={13} />打开目录</button>}</div>
+      </aside>
+    </div>
+  </div>;
 }
 
 function ExternalSiteNotice({ workspace }: { workspace: Workspace }) {

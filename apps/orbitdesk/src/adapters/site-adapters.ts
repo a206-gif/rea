@@ -66,7 +66,7 @@ export const siteAdapters: Record<SiteId, SiteAdapter> = {
     id: "dola",
     name: "Dola",
     shortName: "D",
-    baseUrl: "https://www.dola.com/",
+    baseUrl: "https://www.dola.com/chat/",
     allowedHosts: ["dola.com", "www.dola.com"],
     accent: "#e86743",
     promptSelectors: [
