@@ -1,0 +1,51 @@
+name: OrbitDesk Windows
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "apps/orbitdesk/**"
+      - ".github/workflows/orbitdesk-windows.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/orbitdesk
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.0
+          cache: npm
+          cache-dependency-path: apps/orbitdesk/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build unsigned NSIS installer
+        run: npm run package:win
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: orbitdesk-windows-${{ github.sha }}
+          path: apps/orbitdesk/release/*.exe
+          if-no-files-found: error
+          retention-days: 14
