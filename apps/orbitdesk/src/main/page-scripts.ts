@@ -3,7 +3,7 @@ import type { GenerationTask } from "../shared/contracts.js";
 
 export interface PageActionResult {
   ok: boolean;
-  stage: "blocked" | "prompt" | "mode" | "duration" | "submit" | "submitted" | "ready";
+  stage: "blocked" | "prompt" | "mode" | "model" | "duration" | "ratio" | "submit" | "submitted" | "ready";
   message: string;
 }
 
@@ -173,7 +173,38 @@ const pageInteractionHelpers = String.raw`
         return durationCandidates().find((candidate) => isThirty(candidate) && selected(candidate));
       }, 2200);
       if (!verified) return { ok: false, stage: "duration", message: "点击了 30 秒选项，但无法确认网页已切换到 30 秒；未执行提交" };
-      return { ok: true, stage: "ready", message: "已通过 Dola 网页可见时长菜单选择 30 秒" };
+      return { ok: true, stage: "ready", message: "已通过网页可见时长菜单选择 30 秒" };
+    };
+    const ratioText = (element) => compact(elementText(element)).replace(/[：]/g, ":");
+    const isRatio = (element, wanted) => ratioText(element).includes(String(wanted).replace(/\s+/g, ""));
+    const ratioCandidates = () => {
+      const candidates = [];
+      for (const selector of config.ratioSelectors || []) {
+        try { candidates.push(...document.querySelectorAll(selector)); } catch {}
+      }
+      candidates.push(...interactive().filter((element) => /(^|[^0-9])(16:9|9:16|1:1|4:3|3:4)([^0-9]|$)/.test(ratioText(element))));
+      return [...new Set(candidates)].filter(visible);
+    };
+    const selectAspectRatio = async (anchor) => {
+      const wanted = config.aspectRatio || "16:9";
+      let selectedRatio = ratioCandidates().find((candidate) => isRatio(candidate, wanted) && selected(candidate));
+      if (selectedRatio) return { ok: true, stage: "ready", message: "网页已使用画面比例 " + wanted };
+      let option = ratioCandidates().find((candidate) => isRatio(candidate, wanted) && optionLike(candidate));
+      let trigger = ratioCandidates()
+        .filter((candidate) => !optionLike(candidate))
+        .sort((left, right) => distanceScore(right, anchor) - distanceScore(left, anchor))[0] || null;
+      if (!option && trigger) {
+        if (isRatio(trigger, wanted)) return { ok: true, stage: "ready", message: "网页已使用画面比例 " + wanted };
+        trigger.click();
+        option = await waitFor(() => ratioCandidates().find((candidate) => candidate !== trigger && isRatio(candidate, wanted) && optionLike(candidate)), 1800);
+      }
+      // Ratio selection is only attempted when a ratio control is visible. Some page modes do not expose it.
+      if (!trigger && !option) return { ok: true, stage: "ready", message: "网页未显示画面比例控件，保留网页当前比例" };
+      if (!option) return { ok: false, stage: "ratio", message: "已打开网页比例菜单，但没有找到 " + wanted + "；任务未提交" };
+      option.click();
+      selectedRatio = await waitFor(() => ratioCandidates().find((candidate) => isRatio(candidate, wanted) && (selected(candidate) || !optionLike(candidate))), 1800);
+      if (!selectedRatio) return { ok: false, stage: "ratio", message: "点击了画面比例 " + wanted + "，但无法确认网页状态；任务未提交" };
+      return { ok: true, stage: "ready", message: "已通过网页可见控件选择画面比例 " + wanted };
     };
 `;
 
@@ -204,6 +235,8 @@ export function buildSubmitScript(adapter: SiteAdapter, task: GenerationTask): s
     kind: task.kind,
     promptSelectors: adapter.promptSelectors,
     durationSelectors: adapter.durationSelectors,
+    ratioSelectors: adapter.ratioSelectors,
+    aspectRatio: task.aspectRatio,
     submitSelectors: adapter.submitSelectors,
     submitLabels: adapter.submitLabels,
     durationLabels: adapter.durationLabels,
@@ -221,14 +254,25 @@ export function buildSubmitScript(adapter: SiteAdapter, task: GenerationTask): s
     if (!input) return { ok: false, stage: "prompt", message: "没有找到提示词输入框；请打开 Dola 视频生成页面后重试" };
 
     const modeLabels = config.kind === "video" ? ["视频", "video", "文生视频"] : ["图片", "图像", "image", "文生图"];
-    const activeVideo = config.kind === "video" && [...document.querySelectorAll("button, [role='button'], [data-tag], [class*='tag' i]")]
+    const videoModeState = () => [...document.querySelectorAll("button, [role='button'], [role='tab'], [data-tag], [class*='tag' i]")]
       .filter(visible)
-      .some((element) => ["视频生成", "video generation"].includes(elementText(element)));
+      .find((element) => {
+        const text = elementText(element);
+        const identifiesVideo = ["视频", "视频生成", "文生视频", "video", "video generation"].includes(text);
+        return identifiesVideo && (selected(element) || ["视频生成", "video generation"].includes(text));
+      });
+    let activeVideo = config.kind === "video" && Boolean(videoModeState());
     if (!activeVideo) {
       const mode = byLabels(modeLabels, true) || byLabels(modeLabels);
+      if (!mode && config.kind === "video") return { ok: false, stage: "mode", message: "没有找到网页内可见的视频模式入口；任务未提交" };
       if (mode) {
         mode.click();
-        await sleep(300);
+        if (config.kind === "video") {
+          activeVideo = Boolean(await waitFor(() => videoModeState(), 2200));
+          if (!activeVideo) return { ok: false, stage: "mode", message: "点击了视频模式，但无法确认网页已进入视频生成；任务未提交" };
+        } else {
+          await sleep(300);
+        }
         input = bySelectors(config.promptSelectors) || input;
       }
     }
@@ -257,6 +301,13 @@ export function buildSubmitScript(adapter: SiteAdapter, task: GenerationTask): s
     if (config.kind === "video") {
       const duration = await selectThirtySeconds(input);
       if (!duration.ok) return duration;
+      const ratio = await selectAspectRatio(input);
+      if (!ratio.ok) return ratio;
+      if (!videoModeState()) return { ok: false, stage: "mode", message: "提交前最终检查未确认视频模式；任务未提交" };
+      const finalModel = findModelTrigger(input);
+      if (config.siteId === "dola" && (!finalModel || !isModel25(finalModel))) return { ok: false, stage: "model", message: "提交前最终检查未确认网页模型 2.5；任务未提交" };
+      const finalDuration = findDurationTrigger(input);
+      if (!finalDuration || !isThirty(finalDuration)) return { ok: false, stage: "duration", message: "提交前最终检查未确认网页原生 30 秒；任务未提交" };
     }
 
     const localForm = input.closest("form");
@@ -298,6 +349,42 @@ export function buildSubmitScript(adapter: SiteAdapter, task: GenerationTask): s
     if (!submit) return { ok: false, stage: "submit", message: "没有找到可用的网页生成按钮；任务未提交" };
     submit.click();
     return { ok: true, stage: "submitted", message: "已在网页内选择 30 秒并通过可见生成按钮提交任务" };
+  })()`;
+}
+
+export function buildProbeScript(adapter: SiteAdapter): string {
+  const configuration = JSON.stringify({
+    promptSelectors: adapter.promptSelectors,
+    durationSelectors: adapter.durationSelectors,
+    blockedLabels: adapter.blockedLabels,
+  });
+  return `(() => {
+    const config = ${configuration};
+    const visible = (element) => {
+      if (!(element instanceof HTMLElement)) return false;
+      const style = window.getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && Number(style.opacity || "1") > 0 && element.getClientRects().length > 0;
+    };
+    const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim().toLowerCase();
+    const candidates = [...document.querySelectorAll("button, [role='button'], [role='option'], [role='menuitem'], [role='radio'], [role='combobox'], textarea, [contenteditable='true'], [data-value], [data-duration], div, span")].filter(visible);
+    const texts = candidates.map((element) => normalize(element.getAttribute?.("aria-label") || element.textContent || "")).filter(Boolean);
+    let promptControlVisible = false;
+    for (const selector of config.promptSelectors) {
+      try { if ([...document.querySelectorAll(selector)].some(visible)) { promptControlVisible = true; break; } } catch {}
+    }
+    const visibleDurations = [...new Set(texts.flatMap((text) => text.match(/(?:5|10|15|30)\\s*(?:s|秒|seconds?)/gi) || []).map((value) => value.replace(/\\s+/g, "")))];
+    const pageText = normalize(document.body?.innerText || "");
+    const blockedReason = config.blockedLabels.find((label) => pageText.includes(normalize(label)));
+    return {
+      url: location.href,
+      title: document.title,
+      promptControlVisible,
+      videoModeVisible: texts.some((text) => /(^|\\s)(视频|video|文生视频)(\\s|$)/i.test(text)),
+      model25Visible: texts.some((text) => /2\\.5(?:fast|pro)?/i.test(text)),
+      visibleDurations,
+      thirtySecondsVisible: visibleDurations.some((value) => /^30(?:s|秒|seconds?)$/i.test(value)),
+      ...(blockedReason ? { blockedReason } : {}),
+    };
   })()`;
 }
 

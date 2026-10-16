@@ -42,10 +42,20 @@ jobs:
       - name: Build unsigned NSIS installer
         run: npm run package:win
 
-      - name: Upload installer
+      - name: Write SHA-256 checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem release\*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content -Encoding ascii release\SHA256SUMS.txt
+
+      - name: Upload installer and checksum
         uses: actions/upload-artifact@v4
         with:
           name: orbitdesk-windows-${{ github.sha }}
-          path: apps/orbitdesk/release/*.exe
+          path: |
+            apps/orbitdesk/release/*.exe
+            apps/orbitdesk/release/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14

@@ -9,9 +9,12 @@ const baseTask: GenerationTask = {
   prompt: "a prompt",
   kind: "video",
   durationSeconds: 30,
+  model: "2.5",
+  aspectRatio: "16:9",
   autoDownload: true,
   status: "submitting",
   progress: 18,
+  queueOrder: 0,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
   resultAssetIds: [],
@@ -42,5 +45,7 @@ describe("page script construction", () => {
     const script = buildSubmitScript(adapterFor("dola"), baseTask);
     expect(script).toContain("没有找到 Dola 网页内的时长下拉控件；未执行提交");
     expect(script).toContain("点击了 30 秒选项，但无法确认网页已切换到 30 秒；未执行提交");
+    expect(script).toContain("提交前最终检查未确认网页原生 30 秒；任务未提交");
+    expect(script).toContain("selectAspectRatio");
   });
 });

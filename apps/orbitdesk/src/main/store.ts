@@ -1,5 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { EventEmitter } from "node:events";
 import { adapterFor } from "../adapters/site-adapters.js";
 import { safeId } from "../domain/files.js";
 import { transitionTask } from "../domain/tasks.js";
@@ -10,31 +12,27 @@ import type {
   DetectedAsset,
   DownloadRecord,
   GenerationTask,
-  Profile,
+  LibraryAsset,
+  LoginProfile,
+  MoveDirection,
+  SaveStoryboardInput,
   StateSnapshot,
+  Storyboard,
   TaskStatus,
+  UpdateWorkspaceInput,
   Workspace,
-  WorkspaceRuntimeStatus,
 } from "../shared/contracts.js";
 
-export class StateStore {
-  readonly #path: string;
-  #state: StateSnapshot;
-  #listeners = new Set<(snapshot: StateSnapshot) => void>();
+const activeTaskStatuses = new Set<TaskStatus>(["queued", "preparing", "submitting", "awaiting_result", "downloading"]);
 
-  constructor(path: string, downloadDirectory: string) {
-    this.#path = path;
-    this.#state = this.#load(downloadDirectory);
-    this.#state.workspaces = this.#state.workspaces.map((workspace) => ({
-      ...workspace,
-      startUrl:
-        workspace.siteId === "dola" && workspace.startUrl === "https://www.dola.com/"
-          ? adapterFor("dola").baseUrl
-          : workspace.startUrl,
-      status: "offline",
-      lastError: undefined,
-    }));
-    this.#state.settings.downloadDirectory ||= downloadDirectory;
+export class StateStore extends EventEmitter {
+  readonly #filePath: string;
+  #state: StateSnapshot;
+
+  constructor(filePath: string, downloadDirectory: string) {
+    super();
+    this.#filePath = filePath;
+    this.#state = this.#readState(downloadDirectory);
     this.#persist();
   }
 
@@ -42,309 +40,359 @@ export class StateStore {
     return structuredClone(this.#state);
   }
 
-  subscribe(listener: (snapshot: StateSnapshot) => void): () => void {
-    this.#listeners.add(listener);
-    return () => this.#listeners.delete(listener);
+  getWorkspace(workspaceId: string): Workspace {
+    const workspace = this.#state.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) throw new Error("找不到浏览器实例");
+    return structuredClone(workspace);
+  }
+
+  requireWorkspace(workspaceId: string): Workspace {
+    return this.getWorkspace(workspaceId);
   }
 
   createWorkspace(input: CreateWorkspaceInput): Workspace {
     const now = new Date().toISOString();
-    const adapter = adapterFor(input.siteId);
     const workspace: Workspace = {
       id: safeId("workspace"),
       name: input.name,
       siteId: input.siteId,
       profileId: input.profileId,
-      startUrl: input.startUrl ?? adapter.baseUrl,
+      startUrl: input.startUrl ?? adapterFor(input.siteId).baseUrl,
       status: "offline",
+      group: input.group?.trim() || "默认分组",
+      order: nextOrder(this.#state.workspaces),
+      proxy: input.proxy ?? { mode: "direct" },
       createdAt: now,
     };
-    this.#state.workspaces.unshift(workspace);
+    this.#state.workspaces.push(workspace);
     this.#commit();
     return structuredClone(workspace);
   }
 
+  updateWorkspace(workspaceId: string, patch: UpdateWorkspaceInput): Workspace {
+    let updated: Workspace | undefined;
+    this.#state.workspaces = this.#state.workspaces.map((workspace) => {
+      if (workspace.id !== workspaceId) return workspace;
+      updated = { ...workspace, ...patch };
+      return updated;
+    });
+    if (!updated) throw new Error("找不到浏览器实例");
+    this.#commit();
+    return structuredClone(updated);
+  }
+
+  moveWorkspace(workspaceId: string, direction: MoveDirection): void {
+    this.#moveOrdered(this.#state.workspaces, workspaceId, direction);
+  }
+
   removeWorkspace(workspaceId: string): void {
-    if (this.#state.tasks.some((task) => task.workspaceId === workspaceId && isTaskActive(task.status))) {
-      throw new Error("该工作区仍有活动任务，请先暂停或取消任务");
-    }
-    const before = this.#state.workspaces.length;
+    if (!this.#state.workspaces.some((item) => item.id === workspaceId)) throw new Error("找不到浏览器实例");
+    const hasRunningTasks = this.#state.tasks.some(
+      (task) => task.workspaceId === workspaceId && activeTaskStatuses.has(task.status),
+    );
+    if (hasRunningTasks) throw new Error("该实例仍有活动任务，请先取消任务");
     this.#state.workspaces = this.#state.workspaces.filter((item) => item.id !== workspaceId);
-    if (before === this.#state.workspaces.length) throw new Error("找不到工作区");
+    this.#state.tasks = this.#state.tasks.filter((item) => item.workspaceId !== workspaceId);
+    this.#state.assets = this.#state.assets.filter((item) => item.workspaceId !== workspaceId);
+    this.#state.storyboards = this.#state.storyboards.filter((item) => item.workspaceId !== workspaceId);
+    this.#normalizeOrder(this.#state.workspaces);
+    this.#commit();
+  }
+
+  patchWorkspace(workspaceId: string, patch: Partial<Workspace>): void {
+    this.#state.workspaces = this.#state.workspaces.map((workspace) =>
+      workspace.id === workspaceId ? { ...workspace, ...patch } : workspace,
+    );
     this.#commit();
   }
 
   createTasks(input: CreateTaskInput): GenerationTask[] {
-    this.requireWorkspace(input.workspaceId);
-    const created: GenerationTask[] = [];
-    for (let index = 0; index < input.quantity; index += 1) {
-      const now = new Date(Date.now() + index).toISOString();
-      const task: GenerationTask = {
-        id: safeId("task"),
-        workspaceId: input.workspaceId,
-        prompt: input.prompt,
-        kind: input.kind,
-        durationSeconds: 30,
-        autoDownload: input.autoDownload,
-        status: "queued",
-        progress: 0,
-        createdAt: now,
-        updatedAt: now,
-        resultAssetIds: [],
-        attempt: 0,
-      };
-      this.#state.tasks.unshift(task);
-      created.push(task);
-    }
+    const now = new Date().toISOString();
+    const workspace = this.getWorkspace(input.workspaceId);
+    let order = nextOrder(this.#state.tasks);
+    const created = Array.from({ length: input.quantity }, () => ({
+      id: safeId("task"),
+      workspaceId: input.workspaceId,
+      prompt: input.prompt,
+      kind: input.kind,
+      durationSeconds: 30 as const,
+      model: workspace.siteId === "dola" ? "2.5" as const : "page-default" as const,
+      aspectRatio: input.aspectRatio ?? "16:9" as const,
+      autoDownload: input.autoDownload,
+      status: "queued" as const,
+      progress: 0,
+      queueOrder: order++,
+      createdAt: now,
+      updatedAt: now,
+      resultAssetIds: [],
+      attempt: 0,
+      ...(input.storyboardId ? { storyboardId: input.storyboardId } : {}),
+      ...(input.shotId ? { shotId: input.shotId } : {}),
+    }));
+    this.#state.tasks.push(...created);
     this.#commit();
     return structuredClone(created);
   }
 
-  updateTask(
-    taskId: string,
-    status: TaskStatus,
-    patch: Partial<GenerationTask> = {},
-  ): GenerationTask {
-    const index = this.#state.tasks.findIndex((item) => item.id === taskId);
-    if (index < 0) throw new Error("找不到任务");
-    const current = this.#state.tasks[index];
-    if (!current) throw new Error("找不到任务");
-    const updated = transitionTask(current, status, patch);
-    this.#state.tasks[index] = updated;
+  moveTask(taskId: string, direction: MoveDirection): void {
+    const task = this.#state.tasks.find((item) => item.id === taskId);
+    if (!task) throw new Error("找不到任务");
+    const movableStatuses: TaskStatus[] = ["queued", "paused", "needs_attention", "failed"];
+    if (!movableStatuses.includes(task.status)) throw new Error("执行中的任务不能调整顺序");
+    const ordered = this.#state.tasks.filter((item) => movableStatuses.includes(item.status)).sort((a, b) => a.queueOrder - b.queueOrder);
+    const index = ordered.findIndex((item) => item.id === taskId);
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    const other = ordered[target]!;
+    [task.queueOrder, other.queueOrder] = [other.queueOrder, task.queueOrder];
     this.#commit();
-    return structuredClone(updated);
   }
 
-  patchTask(taskId: string, patch: Partial<GenerationTask>): GenerationTask {
-    const index = this.#state.tasks.findIndex((item) => item.id === taskId);
-    const current = this.#state.tasks[index];
-    if (index < 0 || !current) throw new Error("找不到任务");
-    const updated = { ...current, ...patch, updatedAt: new Date().toISOString() };
-    this.#state.tasks[index] = updated;
-    this.#commit();
-    return structuredClone(updated);
-  }
-
-  setWorkspaceStatus(
-    workspaceId: string,
-    status: WorkspaceRuntimeStatus,
-    patch: Partial<Workspace> = {},
-  ): Workspace {
-    const index = this.#state.workspaces.findIndex((item) => item.id === workspaceId);
-    const current = this.#state.workspaces[index];
-    if (index < 0 || !current) throw new Error("找不到工作区");
-    const updated = { ...current, ...patch, status };
-    this.#state.workspaces[index] = updated;
-    this.#commit();
-    return structuredClone(updated);
-  }
-
-  addAsset(asset: DetectedAsset): DetectedAsset {
-    const existing = this.#state.assets.find(
-      (item) => item.taskId === asset.taskId && item.url === asset.url,
-    );
-    if (existing) return structuredClone(existing);
-    this.#state.assets.unshift(asset);
-    const task = this.#state.tasks.find((item) => item.id === asset.taskId);
-    if (task && !task.resultAssetIds.includes(asset.id)) task.resultAssetIds.push(asset.id);
-    this.#commit();
-    return structuredClone(asset);
-  }
-
-  addDownload(download: DownloadRecord): DownloadRecord {
-    this.#state.downloads.unshift(download);
-    this.#commit();
-    return structuredClone(download);
-  }
-
-  patchDownload(downloadId: string, patch: Partial<DownloadRecord>): DownloadRecord {
-    const index = this.#state.downloads.findIndex((item) => item.id === downloadId);
-    const current = this.#state.downloads[index];
-    if (index < 0 || !current) throw new Error("找不到下载记录");
-    const updated = { ...current, ...patch };
-    this.#state.downloads[index] = updated;
-    this.#commit();
-    return structuredClone(updated);
-  }
-
-  patchAsset(assetId: string, patch: Partial<DetectedAsset>): DetectedAsset {
-    const index = this.#state.assets.findIndex((item) => item.id === assetId);
-    const current = this.#state.assets[index];
-    if (index < 0 || !current) throw new Error("找不到媒体结果");
-    const updated = { ...current, ...patch };
-    this.#state.assets[index] = updated;
-    this.#commit();
-    return structuredClone(updated);
-  }
-
-  updateSettings(patch: Partial<AppSettings>): AppSettings {
-    this.#state.settings = {
-      ...this.#state.settings,
-      ...patch,
-      maxConcurrentWorkspaces: clampInteger(
-        patch.maxConcurrentWorkspaces ?? this.#state.settings.maxConcurrentWorkspaces,
-        1,
-        8,
-      ),
-      resultPollSeconds: clampInteger(
-        patch.resultPollSeconds ?? this.#state.settings.resultPollSeconds,
-        3,
-        60,
-      ),
-      taskTimeoutMinutes: clampInteger(
-        patch.taskTimeoutMinutes ?? this.#state.settings.taskTimeoutMinutes,
-        5,
-        180,
-      ),
-    };
-    this.#commit();
-    return structuredClone(this.#state.settings);
-  }
-
-  requireWorkspace(workspaceId: string): Workspace {
-    const workspace = this.#state.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace) throw new Error("找不到工作区");
-    return structuredClone(workspace);
-  }
-
-  requireTask(taskId: string): GenerationTask {
+  getTask(taskId: string): GenerationTask {
     const task = this.#state.tasks.find((item) => item.id === taskId);
     if (!task) throw new Error("找不到任务");
     return structuredClone(task);
   }
 
-  requireAsset(assetId: string): DetectedAsset {
-    const asset = this.#state.assets.find((item) => item.id === assetId);
-    if (!asset) throw new Error("找不到媒体结果");
+  requireTask(taskId: string): GenerationTask {
+    return this.getTask(taskId);
+  }
+
+  updateTask(taskId: string, status: TaskStatus, patch: Partial<GenerationTask> = {}): GenerationTask {
+    return this.transitionTask(taskId, status, patch);
+  }
+
+  setWorkspaceStatus(workspaceId: string, status: Workspace["status"], patch: Partial<Workspace> = {}): void {
+    this.patchWorkspace(workspaceId, { ...patch, status });
+  }
+
+  transitionTask(taskId: string, status: TaskStatus, patch: Partial<GenerationTask> = {}): GenerationTask {
+    const current = this.#state.tasks.find((task) => task.id === taskId);
+    if (!current) throw new Error("找不到任务");
+    const next = transitionTask(current, status, patch);
+    this.#state.tasks = this.#state.tasks.map((task) => (task.id === taskId ? next : task));
+    this.#commit();
+    return structuredClone(next);
+  }
+
+  patchTask(taskId: string, patch: Partial<GenerationTask>): void {
+    this.#state.tasks = this.#state.tasks.map((task) =>
+      task.id === taskId ? { ...task, ...patch, updatedAt: new Date().toISOString() } : task,
+    );
+    this.#commit();
+  }
+
+  saveStoryboard(input: SaveStoryboardInput): Storyboard {
+    const now = new Date().toISOString();
+    const existing = input.id ? this.#state.storyboards.find((item) => item.id === input.id) : undefined;
+    const storyboard: Storyboard = {
+      id: existing?.id ?? safeId("storyboard"),
+      name: input.name,
+      workspaceId: input.workspaceId,
+      shots: input.shots.map((shot, index) => ({
+        id: shot.id ?? safeId("shot"),
+        order: index,
+        prompt: shot.prompt,
+        kind: shot.kind,
+        aspectRatio: shot.aspectRatio,
+      })),
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+    if (existing) {
+      this.#state.storyboards = this.#state.storyboards.map((item) => item.id === storyboard.id ? storyboard : item);
+    } else {
+      this.#state.storyboards.unshift(storyboard);
+    }
+    this.#commit();
+    return structuredClone(storyboard);
+  }
+
+  deleteStoryboard(storyboardId: string): void {
+    this.#state.storyboards = this.#state.storyboards.filter((item) => item.id !== storyboardId);
+    this.#commit();
+  }
+
+  addAsset(asset: DetectedAsset): DetectedAsset {
+    const existing = this.#state.assets.find((item) => item.url === asset.url && item.workspaceId === asset.workspaceId);
+    if (existing) return structuredClone(existing);
+    this.#state.assets.unshift(asset);
+    this.#state.assets = this.#state.assets.slice(0, 1_000);
+    this.#commit();
     return structuredClone(asset);
   }
 
-  requireDownload(downloadId: string): DownloadRecord {
-    const download = this.#state.downloads.find((item) => item.id === downloadId);
-    if (!download) throw new Error("找不到下载记录");
-    return structuredClone(download);
+  patchAsset(assetId: string, patch: Partial<DetectedAsset>): void {
+    this.#state.assets = this.#state.assets.map((asset) => asset.id === assetId ? { ...asset, ...patch } : asset);
+    this.#commit();
+  }
+
+  addLibraryAssets(assets: LibraryAsset[]): void {
+    this.#state.libraryAssets.unshift(...assets);
+    this.#state.libraryAssets = this.#state.libraryAssets.slice(0, 2_000);
+    this.#commit();
+  }
+
+  removeLibraryAsset(assetId: string): void {
+    this.#state.libraryAssets = this.#state.libraryAssets.filter((asset) => asset.id !== assetId);
+    this.#commit();
+  }
+
+  addDownload(download: DownloadRecord): void {
+    this.#state.downloads.unshift(download);
+    this.#state.downloads = this.#state.downloads.slice(0, 1_000);
+    this.#commit();
+  }
+
+  patchDownload(downloadId: string, patch: Partial<DownloadRecord>): void {
+    this.#state.downloads = this.#state.downloads.map((download) =>
+      download.id === downloadId ? { ...download, ...patch } : download,
+    );
+    this.#commit();
+  }
+
+  updateSettings(patch: Partial<AppSettings>): AppSettings {
+    this.#state.settings = { ...this.#state.settings, ...patch };
+    this.#commit();
+    return structuredClone(this.#state.settings);
+  }
+
+  rotateAutomationApiToken(): string {
+    const token = randomBytes(32).toString("base64url");
+    this.#state.settings.automationApiToken = token;
+    this.#commit();
+    return token;
+  }
+
+  #moveOrdered<T extends { id: string }>(items: T[], id: string, direction: MoveDirection, field: "order" | "queueOrder" = "order"): void {
+    const ordered = [...items].sort((left, right) => Number(left[field as keyof T]) - Number(right[field as keyof T]));
+    const index = ordered.findIndex((item) => item.id === id);
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (index < 0 || target < 0 || target >= ordered.length) return;
+    [ordered[index], ordered[target]] = [ordered[target]!, ordered[index]!];
+    ordered.forEach((item, itemIndex) => Object.assign(item, { [field]: itemIndex }));
+    this.#commit();
+  }
+
+  #normalizeOrder<T extends { order: number }>(items: T[]): void {
+    items.sort((left, right) => left.order - right.order).forEach((item, index) => { item.order = index; });
+  }
+
+  #readState(downloadDirectory: string): StateSnapshot {
+    const fallback = createDefaultState(downloadDirectory);
+    try {
+      const raw = JSON.parse(readFileSync(this.#filePath, "utf8")) as Partial<StateSnapshot>;
+      const settings = { ...fallback.settings, ...(raw.settings ?? {}) };
+      if (!settings.automationApiToken || settings.automationApiToken.length < 32) {
+        settings.automationApiToken = randomBytes(32).toString("base64url");
+      }
+      return {
+        profiles: raw.profiles?.length ? raw.profiles : fallback.profiles,
+        workspaces: (raw.workspaces ?? fallback.workspaces).map((workspace, index) => ({
+          ...workspace,
+          status: "offline",
+          lastError: undefined,
+          group: workspace.group || "默认分组",
+          order: Number.isInteger(workspace.order) ? workspace.order : index,
+          proxy: workspace.proxy ?? { mode: "direct" },
+        })),
+        tasks: (raw.tasks ?? []).map((task, index) => ({
+          ...task,
+          ...(activeTaskStatuses.has(task.status) && task.status !== "queued" ? { status: "needs_attention" as const, error: "OrbitDesk 上次退出时任务仍在执行；请检查官方网页状态后再决定是否重试" } : {}),
+          model: task.model === "page-default" ? "page-default" : (raw.workspaces ?? fallback.workspaces).find((workspace) => workspace.id === task.workspaceId)?.siteId === "dola" ? "2.5" : "page-default",
+          aspectRatio: task.aspectRatio ?? "16:9",
+          queueOrder: Number.isInteger(task.queueOrder) ? task.queueOrder : index,
+        })),
+        assets: raw.assets ?? [],
+        libraryAssets: raw.libraryAssets ?? [],
+        storyboards: raw.storyboards ?? [],
+        downloads: raw.downloads ?? [],
+        settings,
+        adapters: fallback.adapters,
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   #commit(): void {
     this.#persist();
-    const snapshot = this.snapshot();
-    for (const listener of this.#listeners) listener(snapshot);
+    this.emit("changed", this.snapshot());
   }
 
   #persist(): void {
-    mkdirSync(dirname(this.#path), { recursive: true });
-    const temporary = `${this.#path}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, { mode: 0o600 });
-    renameSync(temporary, this.#path);
-  }
-
-  #load(downloadDirectory: string): StateSnapshot {
-    if (existsSync(this.#path)) {
-      try {
-        const parsed = JSON.parse(readFileSync(this.#path, "utf8")) as Partial<StateSnapshot>;
-        if (
-          Array.isArray(parsed.profiles) &&
-          Array.isArray(parsed.workspaces) &&
-          Array.isArray(parsed.tasks) &&
-          Array.isArray(parsed.assets) &&
-          Array.isArray(parsed.downloads) &&
-          parsed.settings
-        ) {
-          return {
-            profiles: parsed.profiles,
-            workspaces: parsed.workspaces,
-            tasks: parsed.tasks,
-            assets: parsed.assets,
-            downloads: parsed.downloads,
-            settings: { ...defaultSettings(downloadDirectory), ...parsed.settings },
-            adapters: Array.isArray(parsed.adapters) ? parsed.adapters : defaultAdapters(),
-          };
-        }
-      } catch {
-        // A malformed state file is not executed or partially trusted. Start clean.
-      }
-    }
-    return defaultState(downloadDirectory);
+    mkdirSync(dirname(this.#filePath), { recursive: true });
+    const temporaryPath = `${this.#filePath}.tmp`;
+    writeFileSync(temporaryPath, JSON.stringify(this.#state, null, 2), { encoding: "utf8", mode: 0o600 });
+    renameSync(temporaryPath, this.#filePath);
   }
 }
 
-function defaultState(downloadDirectory: string): StateSnapshot {
+function nextOrder(items: Array<{ order?: number; queueOrder?: number }>): number {
+  return items.reduce((maximum, item) => Math.max(maximum, item.order ?? item.queueOrder ?? -1), -1) + 1;
+}
+
+function createDefaultState(downloadDirectory: string): StateSnapshot {
   const now = new Date().toISOString();
-  const profiles: Profile[] = [
-    { id: "profile_primary", name: "主工作档案", color: "#6f59e8", createdAt: now },
-    { id: "profile_secondary", name: "素材实验室", color: "#2d8f73", createdAt: now },
-  ];
-  const workspaces: Workspace[] = [
-    {
-      id: "workspace_doubao",
-      name: "豆包视频工作台",
-      siteId: "doubao",
-      profileId: profiles[0]!.id,
-      startUrl: adapterFor("doubao").baseUrl,
-      status: "offline",
-      createdAt: now,
-    },
-    {
-      id: "workspace_dola",
-      name: "Dola 创作窗口",
-      siteId: "dola",
-      profileId: profiles[1]!.id,
-      startUrl: adapterFor("dola").baseUrl,
-      status: "offline",
-      createdAt: now,
-    },
-    {
-      id: "workspace_demo",
-      name: "自动化本地沙箱",
-      siteId: "demo",
-      profileId: profiles[1]!.id,
-      startUrl: adapterFor("demo").baseUrl,
-      status: "offline",
-      createdAt: now,
-    },
-  ];
+  const profile: LoginProfile = {
+    id: safeId("profile"),
+    name: "主工作档案",
+    color: "#6f59e8",
+    createdAt: now,
+  };
   return {
-    profiles,
-    workspaces,
+    profiles: [profile],
+    workspaces: [
+      {
+        id: safeId("workspace"),
+        name: "豆包创作窗口",
+        siteId: "doubao",
+        profileId: profile.id,
+        startUrl: adapterFor("doubao").baseUrl,
+        status: "offline",
+        group: "默认分组",
+        order: 0,
+        proxy: { mode: "direct" },
+        createdAt: now,
+      },
+      {
+        id: safeId("workspace"),
+        name: "Dola 30s 视频窗口",
+        siteId: "dola",
+        profileId: profile.id,
+        startUrl: adapterFor("dola").baseUrl,
+        status: "offline",
+        group: "默认分组",
+        order: 1,
+        proxy: { mode: "direct" },
+        createdAt: now,
+      },
+    ],
     tasks: [],
     assets: [],
+    libraryAssets: [],
+    storyboards: [],
     downloads: [],
-    settings: defaultSettings(downloadDirectory),
-    adapters: defaultAdapters(),
-  };
-}
-
-function defaultSettings(downloadDirectory: string): AppSettings {
-  return {
-    downloadDirectory,
-    maxConcurrentWorkspaces: 3,
-    resultPollSeconds: 6,
-    taskTimeoutMinutes: 45,
-    openWorkspaceOnTask: true,
-    notifyOnComplete: true,
-    theme: "light",
-  };
-}
-
-function defaultAdapters() {
-  return (["doubao", "dola", "demo"] as const).map((siteId) => {
-    const adapter = adapterFor(siteId);
-    return {
+    settings: {
+      downloadDirectory,
+      maxConcurrentWorkspaces: 3,
+      resultPollSeconds: 6,
+      taskTimeoutMinutes: 45,
+      openWorkspaceOnTask: true,
+      notifyOnComplete: true,
+      theme: "light",
+      automationApiEnabled: false,
+      automationApiPort: 17_824,
+      automationApiToken: randomBytes(32).toString("base64url"),
+    },
+    adapters: (["doubao", "dola", "demo"] as const).map((siteId) => ({
       siteId,
-      name: adapter.name,
-      baseUrl: adapter.baseUrl,
+      name: adapterFor(siteId).name,
+      baseUrl: adapterFor(siteId).baseUrl,
       configured: true,
-      lastMessage:
-        siteId === "demo" ? "本地演示适配器可用" : "启发式 UI 适配器；首次使用请在页面中人工确认控件",
-    };
-  });
-}
-
-function isTaskActive(status: TaskStatus): boolean {
-  return !["completed", "failed", "cancelled", "paused", "needs_attention"].includes(status);
-}
-
-function clampInteger(value: number, minimum: number, maximum: number): number {
-  if (!Number.isFinite(value)) return minimum;
-  return Math.max(minimum, Math.min(maximum, Math.round(value)));
+      lastMessage: siteId === "demo"
+        ? "本地适配器仅供自动化回归测试"
+        : "仅操作官方网页的可见控件；不使用隐藏接口或修改权限响应",
+    })),
+  };
 }

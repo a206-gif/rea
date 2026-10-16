@@ -88,3 +88,6 @@
   .dock-content { grid-template-columns: minmax(180px, 1fr) 275px; }
   .studio-page-state span:last-child { display: none; }
 }
+
+.instance-tools { padding: 6px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; border-top: 1px solid #353936; }.instance-tools button { min-height: 25px; border: 1px solid #3b413d; border-radius: 3px; display: flex; align-items: center; justify-content: center; gap: 4px; background: #252a27; color: #8e9a94; font-size: 7px; cursor: pointer; }.instance-tools button:first-child { grid-column: 1 / -1; color: #77c9a7; background: #22352d; }.instance-tools button:hover { color: white; background: #303632; }
+.dock-options { grid-template-columns: 61px 68px 85px 1fr; }.dock-options label select { min-width: 0; width: 38px; border: 0; background: transparent; color: white; outline: 0; font-size: 8px; }.dock-options label select option { color: #202522; }.automation-button { grid-column: 1 / 5; }

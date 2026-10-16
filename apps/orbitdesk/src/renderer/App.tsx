@@ -17,7 +17,10 @@ import {
   Home,
   Image as ImageIcon,
   LayoutDashboard,
+  Library,
   ListTodo,
+  Network,
+  Upload,
   MoreHorizontal,
   PanelsTopLeft,
   Pause,
@@ -39,6 +42,7 @@ import {
 import { adapterFor } from "../adapters/site-adapters";
 import { taskStatusLabel } from "../domain/tasks";
 import type {
+  AspectRatio,
   AssetKind,
   CreateTaskInput,
   CreateWorkspaceInput,
@@ -46,6 +50,7 @@ import type {
   OrbitApi,
   SiteId,
   StateSnapshot,
+  UpdateWorkspaceInput,
   Workspace,
 } from "../shared/contracts";
 import { createDemoApi } from "./demo-api";
@@ -55,15 +60,17 @@ const api: OrbitApi = window.orbit ?? demoApi;
 const isDesktop = Boolean(window.orbit);
 const desktopBridgeMissing = window.location.protocol === "file:" && !window.orbit;
 
-type PageId = "overview" | "workspaces" | "tasks" | "downloads" | "adapters" | "settings";
+type PageId = "overview" | "workspaces" | "storyboards" | "tasks" | "assets" | "downloads" | "adapters" | "settings";
 
 const navigation: Array<{ id: PageId; label: string; icon: LucideIcon }> = [
   { id: "overview", label: "概览", icon: LayoutDashboard },
   { id: "workspaces", label: "浏览器实例", icon: PanelsTopLeft },
+  { id: "storyboards", label: "分镜工作台", icon: Sparkles },
   { id: "tasks", label: "任务队列", icon: ListTodo },
+  { id: "assets", label: "素材库", icon: Library },
   { id: "downloads", label: "下载中心", icon: Download },
   { id: "adapters", label: "站点适配", icon: PlugZap },
-  { id: "settings", label: "设置", icon: Settings },
+  { id: "settings", label: "设置与 API", icon: Settings },
 ];
 
 export function App() {
@@ -137,8 +144,10 @@ function Dashboard({ state }: { state: StateSnapshot }) {
 
   const content = (() => {
     if (page === "overview") return <Overview state={state} query={query} onOpen={openWorkspace} onNewTask={newTask} onNewWorkspace={() => setWorkspaceModal(true)} onPage={setPage} onTaskAction={run} />;
-    if (page === "workspaces") return <WorkspacePage state={state} onOpen={openWorkspace} onNew={() => setWorkspaceModal(true)} />;
+    if (page === "workspaces") return <WorkspacePage state={state} onOpen={openWorkspace} onNew={() => setWorkspaceModal(true)} onAction={run} />;
+    if (page === "storyboards") return <StoryboardPage state={state} onAction={run} />;
     if (page === "tasks") return <TaskPage state={state} onNew={newTask} onAction={run} />;
+    if (page === "assets") return <AssetsPage state={state} onAction={run} />;
     if (page === "downloads") return <DownloadsPage state={state} onReveal={(id) => run(() => api.revealDownload(id))} />;
     if (page === "adapters") return <AdaptersPage state={state} />;
     return <SettingsPage state={state} onSave={(patch) => run(() => api.updateSettings(patch), "设置已保存")} />;
@@ -194,7 +203,7 @@ function Overview({ state, query, onOpen, onNewTask, onNewWorkspace, onPage, onT
   const queued = state.tasks.filter((task) => task.status === "queued").length;
   const completed = state.tasks.filter((task) => task.status === "completed").length;
   const completedBytes = state.downloads.filter((item) => item.status === "completed").reduce((sum, item) => sum + item.receivedBytes, 0);
-  const visibleWorkspaces = state.workspaces.filter((workspace) => !query || workspace.name.toLowerCase().includes(query.toLowerCase()));
+  const visibleWorkspaces = [...state.workspaces].sort((a, b) => a.order - b.order).filter((workspace) => !query || workspace.name.toLowerCase().includes(query.toLowerCase()));
   return (
     <>
       <section className="page-heading"><div><p className="eyebrow">WORKSPACE OVERVIEW</p><h1>下午好，创作者</h1><p>你的生成窗口、任务与结果都在一处。</p></div><div className="heading-actions"><button className="secondary-button" onClick={onNewWorkspace}><PanelsTopLeft size={17} />新建实例</button><button className="primary-button" onClick={onNewTask}><Plus size={17} />创建生成任务</button></div></section>
@@ -231,28 +240,63 @@ function Metric({ icon: Icon, color, label, value, note, trend }: { icon: Lucide
   return <article className="metric-card"><div className={`metric-icon ${color}`}><Icon size={20} /></div><div className="metric-label">{label}<span>{trend}</span></div><strong>{value}</strong><p>{note}</p><div className={`metric-line ${color}`} /></article>;
 }
 
-function WorkspaceCard({ workspace, state, onOpen }: { workspace: Workspace; state: StateSnapshot; onOpen: () => void }) {
+function WorkspaceCard({ workspace, state, onOpen, onSettings }: { workspace: Workspace; state: StateSnapshot; onOpen: () => void; onSettings?: () => void }) {
   const adapter = adapterFor(workspace.siteId);
   const profile = state.profiles.find((item) => item.id === workspace.profileId);
   const active = state.tasks.filter((task) => task.workspaceId === workspace.id && !["completed", "cancelled", "failed"].includes(task.status));
   const targetUrl = workspace.currentUrl ?? workspace.startUrl;
-  return <article className="workspace-card"><div className="workspace-card-head"><div className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</div><div><b>{workspace.name}</b><span>{adapter.name} · {profile?.name ?? "独立档案"}</span></div><button className="mini-menu"><MoreHorizontal size={18} /></button></div><div className="browser-mini"><div className="browser-mini-bar"><i /><i /><i /><span>{targetUrl}</span></div><div className="browser-mini-body"><div className="mini-glow" style={{ background: adapter.accent }} /><span>{adapter.shortName}</span><small>{workspace.status === "working" ? "任务执行中" : workspace.status === "ready" ? "页面已就绪" : "窗口已休眠"}</small></div></div><div className="workspace-card-foot"><div><StatusDot status={workspace.status} />{workspaceStatusLabel(workspace.status)}<span className="divider" />{active.length} 个任务</div>{isDesktop ? <button onClick={onOpen}>打开<ExternalLink size={14} /></button> : <a href={targetUrl} target="_blank" rel="noreferrer">打开真实官网<ExternalLink size={14} /></a>}</div></article>;
+  return <article className="workspace-card"><div className="workspace-card-head"><div className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</div><div><b>{workspace.name}</b><span>{workspace.group} · {adapter.name} · {profile?.name ?? "独立档案"}</span></div><button className="mini-menu" onClick={onSettings} title={onSettings ? "实例设置" : "实例菜单"}><MoreHorizontal size={18} /></button></div><div className="browser-mini"><div className="browser-mini-bar"><i /><i /><i /><span>{targetUrl}</span></div><div className="browser-mini-body"><div className="mini-glow" style={{ background: adapter.accent }} /><span>{adapter.shortName}</span><small>{workspace.status === "working" ? "任务执行中" : workspace.status === "ready" ? "页面已就绪" : "窗口已休眠"}</small></div></div><div className="workspace-card-foot"><div><StatusDot status={workspace.status} />{workspaceStatusLabel(workspace.status)}<span className="divider" />{active.length} 个任务</div>{isDesktop ? <button onClick={onOpen}>打开<ExternalLink size={14} /></button> : <a href={targetUrl} target="_blank" rel="noreferrer">打开真实官网<ExternalLink size={14} /></a>}</div></article>;
 }
 
 function TaskRow({ task, state, onAction }: { task: GenerationTask; state: StateSnapshot; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
   const workspace = state.workspaces.find((item) => item.id === task.workspaceId);
   const active = ["preparing", "submitting", "awaiting_result", "downloading"].includes(task.status);
-  return <article className="task-row"><div className={`task-kind ${task.kind}`} >{task.kind === "video" ? <Video size={18} /> : <ImageIcon size={18} />}</div><div className="task-copy"><div><b>{truncate(task.prompt, 45)}</b><StatusBadge status={task.status} /></div><span>{workspace?.name ?? "未知实例"} · {task.kind === "video" ? "30 秒视频" : "图片"}</span>{active && <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>}{task.error && <small className="task-error">{task.error}</small>}</div><div className="task-meta"><b>{active ? `${task.progress}%` : relativeTime(task.updatedAt)}</b><span>{active ? "预计时间由站点决定" : taskStatusLabel(task.status)}</span></div>{active ? <button className="row-action" onClick={() => onAction(() => api.pauseTask(task.id), "任务已暂停")}><Pause size={15} /></button> : ["paused", "failed", "needs_attention"].includes(task.status) ? <button className="row-action" onClick={() => onAction(() => api.resumeTask(task.id), "任务已重新排队")}><Play size={15} /></button> : <button className="row-action"><MoreHorizontal size={16} /></button>}</article>;
+  return <article className="task-row"><div className={`task-kind ${task.kind}`} >{task.kind === "video" ? <Video size={18} /> : <ImageIcon size={18} />}</div><div className="task-copy"><div><b>{truncate(task.prompt, 45)}</b><StatusBadge status={task.status} /></div><span>{workspace?.name ?? "未知实例"} · {task.kind === "video" ? `${task.model === "2.5" ? "模型 2.5" : "网页默认模型"} · 30 秒 · ${task.aspectRatio}` : `图片 · ${task.aspectRatio}`}</span>{active && <div className="progress-track"><i style={{ width: `${task.progress}%` }} /></div>}{task.error && <small className="task-error">{task.error}</small>}</div><div className="task-meta"><b>{active ? `${task.progress}%` : relativeTime(task.updatedAt)}</b><span>{active ? "预计时间由站点决定" : taskStatusLabel(task.status)}</span></div><TaskControls task={task} active={active} onAction={onAction} /></article>;
 }
 
-function WorkspacePage({ state, onOpen, onNew }: { state: StateSnapshot; onOpen: (id: string) => void; onNew: () => void }) {
-  return <><PageTitle title="浏览器实例" description="每个实例绑定一个持久登录档案；创建数量不设上限。" action="新建实例" onAction={onNew} /><div className="workspace-grid full">{state.workspaces.map((workspace) => <WorkspaceCard key={workspace.id} workspace={workspace} state={state} onOpen={() => onOpen(workspace.id)} />)}<button className="new-workspace-card" onClick={onNew}><span><Plus size={24} /></span><b>新建浏览器实例</b><small>创建新的隔离会话</small></button></div><InfoStrip icon={ShieldCheck} title="会话隔离原则" text="相同登录档案共享 Cookie，不同档案使用不同 Electron persistent partition。密码只进入官方网页，不经过 OrbitDesk IPC。" /></>;
+function TaskControls({ task, active, onAction }: { task: GenerationTask; active: boolean; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  if (active) return <div className="task-controls">{["preparing", "awaiting_result"].includes(task.status) && <button title="暂停本机自动化" onClick={() => void onAction(() => api.pauseTask(task.id), "任务已暂停")}><Pause size={14} /></button>}<button title="取消本机任务" onClick={() => void onAction(() => api.cancelTask(task.id), "任务已取消")}><X size={14} /></button></div>;
+  if (task.status === "queued") return <div className="task-controls"><button title="上移" onClick={() => void onAction(() => api.moveTask(task.id, "up"))}>↑</button><button title="下移" onClick={() => void onAction(() => api.moveTask(task.id, "down"))}>↓</button><button title="取消" onClick={() => void onAction(() => api.cancelTask(task.id), "任务已取消")}><X size={14} /></button></div>;
+  if (["paused", "failed", "needs_attention"].includes(task.status)) return <div className="task-controls"><button title="重新排队" onClick={() => void onAction(() => api.resumeTask(task.id), "任务已重新排队")}><Play size={14} /></button><button title="取消" onClick={() => void onAction(() => api.cancelTask(task.id), "任务已取消")}><X size={14} /></button></div>;
+  return <button className="row-action"><MoreHorizontal size={16} /></button>;
+}
+
+function WorkspacePage({ state, onOpen, onNew, onAction }: { state: StateSnapshot; onOpen: (id: string) => void; onNew: () => void; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [editing, setEditing] = useState<Workspace>();
+  const ordered = [...state.workspaces].sort((a, b) => a.order - b.order);
+  return <><PageTitle title="浏览器实例" description="每个实例拥有独立持久 Cookie、缓存、代理和明确排序。" action="新建实例" onAction={onNew} /><div className="workspace-grid full">{ordered.map((workspace) => <WorkspaceCard key={workspace.id} workspace={workspace} state={state} onOpen={() => onOpen(workspace.id)} onSettings={() => setEditing(workspace)} />)}<button className="new-workspace-card" onClick={onNew}><span><Plus size={24} /></span><b>新建浏览器实例</b><small>独立会话、分组与代理</small></button></div><InfoStrip icon={ShieldCheck} title="会话隔离原则" text="每个实例使用独立 Electron persistent partition。Cookie 导入导出必须由你显式操作，且只接受实例站点域名。密码只进入官方网页。" />{editing && <WorkspaceSettingsModal workspace={editing} onClose={() => setEditing(undefined)} onSave={async (patch) => { await onAction(() => api.updateWorkspace(editing.id, patch), "实例设置已保存"); setEditing(undefined); }} onAction={onAction} />}</>;
 }
 
 function TaskPage({ state, onNew, onAction }: { state: StateSnapshot; onNew: () => void; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
   const [filter, setFilter] = useState("all");
   const tasks = filter === "all" ? state.tasks : state.tasks.filter((task) => task.status === filter);
   return <><PageTitle title="任务队列" description="每个工作区串行执行，工作区之间按并发上限运行。" action="新建任务" onAction={onNew} /><div className="filter-tabs">{[["all", "全部"], ["queued", "排队"], ["awaiting_result", "生成中"], ["completed", "已完成"], ["needs_attention", "需处理"]].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}</div><section className="panel table-panel"><div className="task-list large">{tasks.length ? tasks.map((task) => <TaskRow key={task.id} task={task} state={state} onAction={onAction} />) : <EmptyState icon={ListTodo} title="没有匹配任务" text="调整筛选条件，或创建一个新的生成任务。" />}</div></section></>;
+}
+
+function StoryboardPage({ state, onAction }: { state: StateSnapshot; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [editingId, setEditingId] = useState<string>();
+  const [name, setName] = useState("新的 30s 分镜");
+  const [workspaceId, setWorkspaceId] = useState(state.workspaces[0]?.id ?? "");
+  const [ratio, setRatio] = useState<AspectRatio>("16:9");
+  const [script, setScript] = useState("");
+  const shots = script.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const reset = () => { setEditingId(undefined); setName("新的 30s 分镜"); setScript(""); };
+  const edit = (id: string) => {
+    const board = state.storyboards.find((item) => item.id === id); if (!board) return;
+    setEditingId(board.id); setName(board.name); setWorkspaceId(board.workspaceId); setRatio(board.shots[0]?.aspectRatio ?? "16:9"); setScript(board.shots.map((shot) => shot.prompt).join("\n"));
+  };
+  const save = async () => {
+    if (!name.trim() || !workspaceId || !shots.length) return;
+    await onAction(() => api.saveStoryboard({ id: editingId, name: name.trim(), workspaceId, shots: shots.map((prompt) => ({ prompt, kind: "video", aspectRatio: ratio })) }), editingId ? "分镜已更新" : "分镜已保存");
+    reset();
+  };
+  return <><PageTitle title="分镜工作台" description="一行一个镜头；保存后可按顺序加入实例队列。" /><div className="storyboard-layout"><section className="panel storyboard-editor"><div className="storyboard-fields"><label>分镜名称<input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} /></label><label>目标实例<select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>{state.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select></label><label>画面比例<select value={ratio} onChange={(event) => setRatio(event.target.value as AspectRatio)}>{["16:9", "9:16", "1:1", "4:3", "3:4"].map((value) => <option key={value}>{value}</option>)}</select></label></div><label className="storyboard-script">镜头提示词<textarea value={script} onChange={(event) => setScript(event.target.value)} placeholder={'远景：清晨城市，镜头缓慢推进…\n中景：角色回头，风吹动衣角…\n特写：眼神与光影细节…'} /></label><div className="storyboard-actions"><span>{shots.length} 个镜头 · 每个视频严格使用网页模型 2.5 / 30s</span>{editingId && <button className="secondary-button" onClick={reset}>取消编辑</button>}<button className="primary-button" disabled={!shots.length || !workspaceId} onClick={() => void save()}>{editingId ? "更新分镜" : "保存分镜"}</button></div></section><section className="storyboard-list">{state.storyboards.length ? state.storyboards.map((board) => { const workspace = state.workspaces.find((item) => item.id === board.workspaceId); return <article className="panel storyboard-card" key={board.id}><div><span className="storyboard-count">{board.shots.length}</span><div><b>{board.name}</b><small>{workspace?.name ?? "实例已删除"} · {relativeTime(board.updatedAt)}</small></div></div><p>{board.shots.slice(0, 3).map((shot, index) => `${index + 1}. ${truncate(shot.prompt, 42)}`).join(" · ")}</p><footer><button onClick={() => edit(board.id)}>编辑</button><button onClick={() => void onAction(() => api.deleteStoryboard(board.id), "分镜已删除")}><Trash2 size={13} />删除</button><button className="queue-board" onClick={() => void onAction(() => api.queueStoryboard(board.id), `${board.shots.length} 个镜头已加入队列`)}><Play size={13} />加入队列</button></footer></article> }) : <div className="panel"><EmptyState icon={Sparkles} title="还没有分镜" text="在左侧输入一行一个镜头，并保存为可复用工作流。" /></div>}</section></div></>;
+}
+
+function AssetsPage({ state, onAction }: { state: StateSnapshot; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [filter, setFilter] = useState<"all" | AssetKind>("all");
+  const assets = state.libraryAssets.filter((asset) => filter === "all" || asset.kind === filter);
+  return <><PageTitle title="素材库" description="本机导入和已下载的生成结果统一归档；文件不会上传到 OrbitDesk 服务。" action="导入素材" onAction={() => void onAction(() => api.importLibraryAssets(), "素材已导入")} /><div className="filter-tabs">{[["all", "全部"], ["video", "视频"], ["image", "图片"]].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id as typeof filter)}>{label}</button>)}</div><div className="library-grid">{assets.map((asset) => <article className="library-card" key={asset.id}><div className={`library-preview ${asset.kind}`}>{asset.kind === "video" ? <Video size={28} /> : <ImageIcon size={28} />}</div><div><b title={asset.name}>{asset.name}</b><small>{formatBytes(asset.bytes)} · {asset.source === "download" ? "生成结果" : "本机导入"}</small><span>{asset.tags.join(" · ")}</span></div><footer><button onClick={() => void onAction(() => api.revealLibraryAsset(asset.id))}><FolderOpen size={13} />定位</button><button onClick={() => void onAction(() => api.removeLibraryAsset(asset.id), "素材记录已移除")}><Trash2 size={13} />移除</button></footer></article>)}{!assets.length && <div className="panel library-empty"><EmptyState icon={Library} title="素材库为空" text="导入视频/图片，或等待生成任务下载结果。" /><button className="primary-button" onClick={() => void onAction(() => api.importLibraryAssets(), "素材已导入")}><Upload size={16} />导入素材</button></div>}</div></>;
 }
 
 function DownloadsPage({ state, onReveal }: { state: StateSnapshot; onReveal: (id: string) => void }) {
@@ -265,7 +309,8 @@ function AdaptersPage({ state }: { state: StateSnapshot }) {
 
 function SettingsPage({ state, onSave }: { state: StateSnapshot; onSave: (patch: Partial<StateSnapshot["settings"]>) => Promise<void> }) {
   const [settings, setSettings] = useState(state.settings);
-  return <><PageTitle title="设置" description="控制并发、轮询频率和本机下载行为。" /><section className="settings-layout"><div className="panel settings-panel"><SettingRow title="下载目录" description="视频和图片结果的默认保存位置"><div className="path-field"><FolderOpen size={16} /><input value={settings.downloadDirectory} onChange={(e) => setSettings({ ...settings, downloadDirectory: e.target.value })} /></div></SettingRow><SettingRow title="并发工作区" description="不同登录档案可并行；同一工作区保持串行。"><input className="number-input" type="number" min={1} max={8} value={settings.maxConcurrentWorkspaces} onChange={(e) => setSettings({ ...settings, maxConcurrentWorkspaces: Number(e.target.value) })} /></SettingRow><SettingRow title="结果检测间隔" description="频率过高可能增加页面负担。"><select value={settings.resultPollSeconds} onChange={(e) => setSettings({ ...settings, resultPollSeconds: Number(e.target.value) })}><option value={3}>3 秒</option><option value={6}>6 秒</option><option value={10}>10 秒</option><option value={20}>20 秒</option></select></SettingRow><SettingRow title="任务超时" description="超时只停止检测，不会取消站点上的生成。"><select value={settings.taskTimeoutMinutes} onChange={(e) => setSettings({ ...settings, taskTimeoutMinutes: Number(e.target.value) })}><option value={30}>30 分钟</option><option value={45}>45 分钟</option><option value={60}>60 分钟</option><option value={90}>90 分钟</option></select></SettingRow><SettingRow title="完成通知" description="任务检测完成时发送系统通知。"><Toggle checked={settings.notifyOnComplete} onChange={(checked) => setSettings({ ...settings, notifyOnComplete: checked })} /></SettingRow><div className="settings-actions"><button className="primary-button" onClick={() => void onSave(settings)}>保存设置</button></div></div><aside className="settings-note"><Command size={22} /><h3>自动化边界</h3><p>OrbitDesk 不处理验证码、不规避付费或额度限制、不保存网页登录密码。出现这些情况时任务进入“需要处理”。</p></aside></section></>;
+  const [showToken, setShowToken] = useState(false);
+  return <><PageTitle title="设置与本地 API" description="控制并发、下载以及默认关闭的鉴权回环自动化接口。" /><section className="settings-layout"><div className="panel settings-panel"><SettingRow title="下载目录" description="视频和图片结果的默认保存位置"><div className="path-field"><FolderOpen size={16} /><input value={settings.downloadDirectory} onChange={(e) => setSettings({ ...settings, downloadDirectory: e.target.value })} /></div></SettingRow><SettingRow title="并发工作区" description="不同实例可并行；同一实例保持串行。"><input className="number-input" type="number" min={1} max={8} value={settings.maxConcurrentWorkspaces} onChange={(e) => setSettings({ ...settings, maxConcurrentWorkspaces: Number(e.target.value) })} /></SettingRow><SettingRow title="结果检测间隔" description="频率过高可能增加页面负担。"><select value={settings.resultPollSeconds} onChange={(e) => setSettings({ ...settings, resultPollSeconds: Number(e.target.value) })}><option value={3}>3 秒</option><option value={6}>6 秒</option><option value={10}>10 秒</option><option value={20}>20 秒</option></select></SettingRow><SettingRow title="任务超时" description="超时只停止检测，不会取消站点上的生成。"><select value={settings.taskTimeoutMinutes} onChange={(e) => setSettings({ ...settings, taskTimeoutMinutes: Number(e.target.value) })}><option value={30}>30 分钟</option><option value={45}>45 分钟</option><option value={60}>60 分钟</option><option value={90}>90 分钟</option></select></SettingRow><SettingRow title="完成通知" description="任务检测完成时发送系统通知。"><Toggle checked={settings.notifyOnComplete} onChange={(checked) => setSettings({ ...settings, notifyOnComplete: checked })} /></SettingRow><SettingRow title="本地自动化 API" description="仅绑定 127.0.0.1，所有路由都要求 Bearer Token，默认关闭。"><Toggle checked={settings.automationApiEnabled} onChange={(checked) => setSettings({ ...settings, automationApiEnabled: checked })} /></SettingRow><SettingRow title="API 端口" description="Host 头也必须匹配该回环端口。"><input className="number-input" type="number" min={1024} max={65535} value={settings.automationApiPort} onChange={(event) => setSettings({ ...settings, automationApiPort: Number(event.target.value) })} /></SettingRow><SettingRow title="Bearer Token" description="相当于本机 API 密码；不要粘贴到网页或分享给他人。"><div className="token-field"><code>{showToken ? settings.automationApiToken : "••••••••••••••••••••••••"}</code><button onClick={() => setShowToken((value) => !value)}>{showToken ? "隐藏" : "显示"}</button><button onClick={() => void navigator.clipboard.writeText(settings.automationApiToken)}>复制</button><button onClick={() => { if (window.confirm("轮换 Token 会立即使旧 API 客户端失效，是否继续？")) void api.rotateAutomationApiToken().then((token) => setSettings((value) => ({ ...value, automationApiToken: token }))); }}>轮换</button></div></SettingRow><div className="settings-actions"><button className="primary-button" onClick={() => void onSave(settings)}>保存并应用</button></div></div><aside className="settings-note"><Network size={22} /><h3>最小权限 API</h3><p>接口仅提供健康检查、脱敏状态、任务创建/取消和实例打开。无 Cookie、文件路径、网页脚本执行或任意导航接口。</p><code className="api-endpoint">http://127.0.0.1:{settings.automationApiPort}/v1/health</code><Command size={22} /><h3>自动化边界</h3><p>不处理验证码、不规避付费或额度限制、不调用隐藏接口。无法确认 2.5 / 30s 时会停止。</p></aside></section></>;
 }
 
 function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: StateSnapshot }) {
@@ -275,6 +320,7 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
   const [status, setStatus] = useState("正在连接真实网页");
   const [prompt, setPrompt] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("16:9");
   const [autoDownload, setAutoDownload] = useState(true);
   const [working, setWorking] = useState(false);
   const [panelMessage, setPanelMessage] = useState("Dola 模型 2.5 · 网页内 30 秒控制器已就绪");
@@ -345,6 +391,7 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
         durationSeconds: 30,
         quantity,
         autoDownload,
+        aspectRatio,
       });
       setPrompt("");
       setPanelMessage(`已锁定 Dola 模型 2.5 / 30s，并加入 ${quantity} 个自动化任务`);
@@ -378,7 +425,7 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
         <div className="instance-list">
           {siblingWorkspaces.map((item, index) => <button key={item.id} className={item.id === workspaceId ? "active" : ""} onClick={() => void api.openWorkspace(item.id)}><span className="instance-avatar" style={{ background: adapter.accent }}>{adapter.shortName}</span><span><b>{adapter.name}-{index}</b><small>{item.id === workspaceId ? "当前真实网页" : item.name}</small></span><i className={item.status === "offline" ? "off" : "on"}>{item.status === "offline" ? "关" : "开"}</i></button>)}
         </div>
-        <div className="instance-security"><ShieldCheck size={14} /><span>登录状态按档案隔离保存</span></div>
+        <div className="instance-tools"><button onClick={() => void api.probeWorkspace(workspaceId).then((probe) => setPanelMessage(`诊断：输入框 ${probe.promptControlVisible ? "✓" : "×"} · 2.5 ${probe.model25Visible ? "✓" : "×"} · 30s ${probe.thirtySecondsVisible ? "✓" : "×"}`)).catch((reason) => setPanelMessage(errorMessage(reason)))}><PlugZap size={12} />诊断页面</button><button onClick={() => void api.exportWorkspaceCookies(workspaceId).then((result) => result && setPanelMessage(`已导出 ${result.exported ?? 0} 条 Cookie`)).catch((reason) => setPanelMessage(errorMessage(reason)))}>导出 Cookie</button><button onClick={() => void api.importWorkspaceCookies(workspaceId).then((result) => result && setPanelMessage(`已导入 ${result.imported ?? 0} 条 Cookie`)).catch((reason) => setPanelMessage(errorMessage(reason)))}>导入 Cookie</button></div><div className="instance-security"><ShieldCheck size={14} /><span>每个实例使用独立持久会话</span></div>
       </aside>
       <main className="studio-center">
         <div className="browser-surface" ref={surfaceRef}>{!isDesktop && <ExternalSiteNotice workspace={workspace} />}</div>
@@ -388,6 +435,7 @@ function WorkspaceWindow({ workspaceId, state }: { workspaceId: string; state: S
             <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="输入分镜或视频描述；任务会直接操作当前 Dola 网页的 30s 选项…" />
             <div className="dock-options">
               <label>数量<input type="number" min={1} max={20} value={quantity} onChange={(event) => setQuantity(Math.max(1, Math.min(20, Number(event.target.value))))} /></label>
+              <label>比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option></select></label>
               <label className="dock-check"><input type="checkbox" checked={autoDownload} onChange={(event) => setAutoDownload(event.target.checked)} />自动下载</label>
               <button className="duration-button" disabled={working} onClick={() => void selectThirty()}><Clock3 size={15} />模型 2.5 · 30s</button>
               <button className="automation-button" disabled={working || !prompt.trim()} onClick={() => void submitThirtySecondTasks()}><Sparkles size={16} />{working ? "执行中…" : "分镜自动化"}</button>
@@ -415,17 +463,30 @@ function TaskModal({ state, onClose, onSubmit }: { state: StateSnapshot; onClose
   const [kind, setKind] = useState<AssetKind>("video");
   const [prompt, setPrompt] = useState("");
   const [quantity, setQuantity] = useState(1);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>("16:9");
   const [autoDownload, setAutoDownload] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setSubmitting(true); try { await onSubmit({ workspaceId, prompt: prompt.trim(), kind, durationSeconds: 30, quantity, autoDownload }); } finally { setSubmitting(false); } };
-  return <Modal title="创建生成任务" subtitle="任务将使用所选实例中已登录的官方网页会话" onClose={onClose}><form onSubmit={(event) => void submit(event)}><label className="form-label">浏览器实例<select value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name} · {adapterFor(workspace.siteId).name}</option>)}</select></label><div className="form-label">生成类型<div className="kind-switch"><button type="button" className={kind === "video" ? "active" : ""} onClick={() => setKind("video")}><Video size={17} />30 秒视频</button><button type="button" className={kind === "image" ? "active" : ""} onClick={() => setKind("image")}><ImageIcon size={17} />图片</button></div></div><label className="form-label">提示词<textarea rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述主体、环境、镜头运动、光线与风格…" maxLength={8000} /><span className="field-count">{prompt.length} / 8000</span></label><div className="form-grid"><label className="form-label">任务数量<input type="number" min={1} max={20} value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label className="form-label">视频时长<div className="locked-field"><Clock3 size={16} />{kind === "video" ? "30 秒（严格匹配）" : "不适用"}</div></label></div><label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span><b>检测完成后自动下载</b><small>保留原始文件名并写入下载中心</small></span></label><div className="boundary-note"><ShieldCheck size={16} /><span>找不到 30 秒选项、出现验证或额度提示时，任务会暂停等待人工处理。</span></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!prompt.trim() || submitting}>{submitting ? "正在创建…" : "加入任务队列"}</button></div></form></Modal>;
+  const submit = async (event: FormEvent) => { event.preventDefault(); if (!prompt.trim()) return; setSubmitting(true); try { await onSubmit({ workspaceId, prompt: prompt.trim(), kind, durationSeconds: 30, quantity, autoDownload, aspectRatio }); } finally { setSubmitting(false); } };
+  return <Modal title="创建生成任务" subtitle="任务将使用所选实例中已登录的官方网页会话" onClose={onClose}><form onSubmit={(event) => void submit(event)}><label className="form-label">浏览器实例<select value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>{state.workspaces.map((workspace) => <option value={workspace.id} key={workspace.id}>{workspace.name} · {adapterFor(workspace.siteId).name}</option>)}</select></label><div className="form-label">生成类型<div className="kind-switch"><button type="button" className={kind === "video" ? "active" : ""} onClick={() => setKind("video")}><Video size={17} />30 秒视频</button><button type="button" className={kind === "image" ? "active" : ""} onClick={() => setKind("image")}><ImageIcon size={17} />图片</button></div></div><label className="form-label">提示词<textarea rows={5} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="描述主体、环境、镜头运动、光线与风格…" maxLength={8000} /><span className="field-count">{prompt.length} / 8000</span></label><div className="form-grid"><label className="form-label">任务数量<input type="number" min={1} max={20} value={quantity} onChange={(e) => setQuantity(Number(e.target.value))} /></label><label className="form-label">视频时长<div className="locked-field"><Clock3 size={16} />{kind === "video" ? "30 秒（严格匹配）" : "不适用"}</div></label></div><label className="form-label">画面比例<select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value as AspectRatio)}>{["16:9", "9:16", "1:1", "4:3", "3:4"].map((value) => <option key={value}>{value}</option>)}</select></label><label className="check-row"><input type="checkbox" checked={autoDownload} onChange={(e) => setAutoDownload(e.target.checked)} /><span><b>检测完成后自动下载</b><small>保留原始文件名并写入下载中心</small></span></label><div className="boundary-note"><ShieldCheck size={16} /><span>找不到 30 秒选项、出现验证或额度提示时，任务会暂停等待人工处理。</span></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!prompt.trim() || submitting}>{submitting ? "正在创建…" : "加入任务队列"}</button></div></form></Modal>;
+}
+
+function WorkspaceSettingsModal({ workspace, onClose, onSave, onAction }: { workspace: Workspace; onClose: () => void; onSave: (patch: UpdateWorkspaceInput) => Promise<void>; onAction: (work: () => Promise<unknown>, success?: string) => Promise<void> }) {
+  const [name, setName] = useState(workspace.name);
+  const [group, setGroup] = useState(workspace.group);
+  const [startUrl, setStartUrl] = useState(workspace.startUrl);
+  const [proxyMode, setProxyMode] = useState(workspace.proxy.mode);
+  const [proxyServer, setProxyServer] = useState(workspace.proxy.server ?? "");
+  const [bypassRules, setBypassRules] = useState(workspace.proxy.bypassRules ?? "<-loopback>");
+  const submit = (event: FormEvent) => { event.preventDefault(); void onSave({ name: name.trim(), group: group.trim(), startUrl: startUrl.trim(), proxy: proxyMode === "direct" ? { mode: "direct" } : { mode: "fixed_servers", server: proxyServer.trim(), bypassRules: bypassRules.trim() } }); };
+  return <Modal title="实例设置" subtitle="独立会话、官网入口、排序、代理和 Cookie 迁移" onClose={onClose}><form onSubmit={submit}><label className="form-label">实例名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><div className="form-grid"><label className="form-label">分组<input value={group} onChange={(event) => setGroup(event.target.value)} /></label><label className="form-label">代理模式<select value={proxyMode} onChange={(event) => setProxyMode(event.target.value as typeof proxyMode)}><option value="direct">直连</option><option value="fixed_servers">固定代理</option></select></label></div><label className="form-label">官方站点入口<input value={startUrl} onChange={(event) => setStartUrl(event.target.value)} /></label>{proxyMode === "fixed_servers" && <><label className="form-label">代理服务器<input value={proxyServer} onChange={(event) => setProxyServer(event.target.value)} placeholder="http://127.0.0.1:7890 或 socks5://host:1080" /></label><label className="form-label">绕过规则<input value={bypassRules} onChange={(event) => setBypassRules(event.target.value)} placeholder="<-loopback>" /></label></>}<div className="session-toolbox"><b>会话迁移</b><p>Cookie 文件包含登录凭据。只导入可信文件，使用后妥善保管或删除。</p><div><button type="button" className="secondary-button" onClick={() => void onAction(() => api.exportWorkspaceCookies(workspace.id), "Cookie 已导出")}>导出 Cookie</button><button type="button" className="secondary-button" onClick={() => void onAction(() => api.importWorkspaceCookies(workspace.id), "Cookie 已导入")}>导入 Cookie</button></div></div><div className="instance-order-actions"><button type="button" onClick={() => void onAction(() => api.moveWorkspace(workspace.id, "up"), "实例已上移")}>上移</button><button type="button" onClick={() => void onAction(() => api.moveWorkspace(workspace.id, "down"), "实例已下移")}>下移</button><button type="button" className="danger-link" onClick={() => { if (window.confirm(`确定删除“${workspace.name}”？实例任务和会话入口将被移除。`)) void onAction(() => api.removeWorkspace(workspace.id), "实例已删除").then(onClose); }}><Trash2 size={13} />删除实例</button></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!name.trim() || !group.trim() || (proxyMode === "fixed_servers" && !proxyServer.trim())}>保存并应用</button></div></form></Modal>;
 }
 
 function WorkspaceModal({ state, onClose, onSubmit }: { state: StateSnapshot; onClose: () => void; onSubmit: (input: CreateWorkspaceInput) => Promise<void> }) {
   const [siteId, setSiteId] = useState<SiteId>("doubao");
   const [profileId, setProfileId] = useState(state.profiles[0]?.id ?? "");
   const [name, setName] = useState("新的创作窗口");
-  return <Modal title="新建浏览器实例" subtitle="每个实例可绑定一个持久且隔离的登录档案" onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, siteId, profileId }); }}><div className="site-choice">{(["doubao", "dola"] as SiteId[]).map((id) => { const adapter = adapterFor(id); return <button type="button" key={id} className={siteId === id ? "active" : ""} onClick={() => { setSiteId(id); setName(`${adapter.name} 创作窗口`); }}><span className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</span><b>{adapter.name}</b><small>{adapter.baseUrl}</small><i><Check size={13} /></i></button>})}</div><label className="form-label">实例名称<input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} /></label><label className="form-label">登录档案<select value={profileId} onChange={(e) => setProfileId(e.target.value)}>{state.profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select></label><div className="boundary-note"><ShieldCheck size={16} /><span>首次打开后请在官方网页中手动登录。OrbitDesk 不读取或保存登录密码。</span></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!name.trim()}>创建实例</button></div></form></Modal>;
+  const [group, setGroup] = useState("默认分组");
+  return <Modal title="新建浏览器实例" subtitle="每个实例拥有独立持久会话，可配置分组和代理" onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, siteId, profileId, group }); }}><div className="site-choice">{(["doubao", "dola"] as SiteId[]).map((id) => { const adapter = adapterFor(id); return <button type="button" key={id} className={siteId === id ? "active" : ""} onClick={() => { setSiteId(id); setName(`${adapter.name} 创作窗口`); }}><span className="site-mark" style={{ background: adapter.accent }}>{adapter.shortName}</span><b>{adapter.name}</b><small>{adapter.baseUrl}</small><i><Check size={13} /></i></button>})}</div><label className="form-label">实例名称<input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} /></label><label className="form-label">实例分组<input value={group} onChange={(e) => setGroup(e.target.value)} maxLength={60} /></label><label className="form-label">登录档案<select value={profileId} onChange={(e) => setProfileId(e.target.value)}>{state.profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select></label><div className="boundary-note"><ShieldCheck size={16} /><span>首次打开后请在官方网页中手动登录。OrbitDesk 不读取或保存登录密码。</span></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>取消</button><button className="primary-button" disabled={!name.trim()}>创建实例</button></div></form></Modal>;
 }
 
 function Modal({ title, subtitle, onClose, children }: { title: string; subtitle: string; onClose: () => void; children: ReactNode }) {

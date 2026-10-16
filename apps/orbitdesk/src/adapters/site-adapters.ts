@@ -9,6 +9,7 @@ export interface SiteAdapter {
   accent: string;
   promptSelectors: string[];
   durationSelectors: string[];
+  ratioSelectors: string[];
   submitSelectors: string[];
   submitLabels: string[];
   durationLabels: string[];
@@ -51,6 +52,11 @@ export const siteAdapters: Record<SiteId, SiteAdapter> = {
       "[data-value='30']",
       "input[value='30']",
     ],
+    ratioSelectors: [
+      "[data-input-engine-actionbar-control-key='video-ratio']",
+      "[data-testid*='ratio']",
+      "button[aria-label*='比例']",
+    ],
     submitSelectors: [
       "button[data-testid*='generate']",
       "button[aria-label*='生成']",
@@ -82,6 +88,12 @@ export const siteAdapters: Record<SiteId, SiteAdapter> = {
       "[data-duration='30']",
       "input[value='30']",
     ],
+    ratioSelectors: [
+      "[data-input-engine-actionbar-control-key='video-ratio']",
+      "[data-testid*='ratio']",
+      "button[aria-label*='ratio' i]",
+      "button[aria-label*='比例']",
+    ],
     submitSelectors: [
       "button[data-action='generate']",
       "button[aria-label*='generate' i]",
@@ -102,6 +114,7 @@ export const siteAdapters: Record<SiteId, SiteAdapter> = {
     accent: "#2d8f73",
     promptSelectors: ["#prompt"],
     durationSelectors: ["[data-duration='30']"],
+    ratioSelectors: ["[data-ratio]"],
     submitSelectors: ["#generate"],
     submitLabels: ["生成"],
     durationLabels: ["30 秒"],

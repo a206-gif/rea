@@ -50,7 +50,7 @@ export function transitionTask(
 export function runnableTasks(tasks: readonly GenerationTask[]): GenerationTask[] {
   return tasks
     .filter((task) => task.status === "queued")
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    .sort((left, right) => left.queueOrder - right.queueOrder || left.createdAt.localeCompare(right.createdAt));
 }
 
 export function taskStatusLabel(status: TaskStatus): string {

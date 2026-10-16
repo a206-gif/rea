@@ -1,44 +1,101 @@
-# OrbitDesk AI Studio
+# OrbitDesk AI Studio 0.3
 
-OrbitDesk is a **clean-room**, Windows-first Electron desktop application for managing many isolated browser workspaces and authorized AI-generation tasks. It does not reuse code, assets, protocol observations, or branding from the analyzed Dola binary.
+OrbitDesk is a **clean-room**, Windows-first Electron desktop application for managing isolated browser instances and authorized AI-generation workflows on the official Doubao and Dola websites. It does not reuse proprietary source code, assets, extension packages, protocol handlers, branding, or private service behavior from the analyzed application.
 
-## MVP scope
+## Capabilities
 
-- Unlimited workspace records and independently opened Electron windows.
-- Persistent login profiles backed by Electron `persist:` session partitions.
-- Built-in adapters for `https://www.doubao.com/` and the Dola creation page at `https://www.dola.com/chat/`.
-- A dark multi-pane creation workspace with instance list, embedded official page, 30-second automation dock, and result sidebar.
-- Sequential task queues per workspace with bounded cross-workspace concurrency.
-- Direct Dola 30-second control: switch Dola's visible model selector to `2.5`, open the page's own duration menu, click its exact `30s` option, verify both page changes, and only then submit.
-- Strict fail-closed behavior: if the visible 30-second control cannot be found or verified, submission stops.
-- Image/video completion detection from the currently visible authorized page.
-- Electron download integration, Windows-safe filenames, progress records, and reveal-in-folder.
-- Automatic pause on CAPTCHA, human-verification, rate-limit, membership, or quota text.
-- Local JSON state stored under Electron `userData`; downloads default to `Downloads/OrbitDesk`.
-- A local automation sandbox (`demo-generator.html`) for selector and result-flow validation.
+### Instances and sessions
 
-## Explicit non-goals
+- Ordered, grouped browser-instance catalog with independently persistent Electron `persist:` partitions.
+- Real `https://www.doubao.com/` and `https://www.dola.com/chat/` navigation in sandboxed `WebContentsView` surfaces.
+- Manual login on the official site; OrbitDesk does not collect passwords.
+- Per-instance start URL and direct, HTTP(S), SOCKS4, or SOCKS5 proxy rules.
+- Explicit JSON Cookie import/export for account owners migrating their own session. Cookie domains are restricted to the selected adapter's official allowlist.
+- Back, forward, reload, home, popup restriction, navigation allowlists, isolated cache, and persistent cookies.
 
-OrbitDesk does not bypass CAPTCHA, payment, membership, account limits, rate limits, or platform access controls. It does not call private APIs, extract passwords, or inject credentials. Login happens manually in the official web page. Automations run only when the active page is back on the configured site domain.
+### Visible-page automation
 
-The Doubao and Dola adapters are intentionally heuristic because third-party HTML changes without notice. They must be calibrated against the user's current, authorized account UI before unattended use. The first task should stay visible. Failure to find an exact 30-second control is a hard stop, never a fallback to another duration.
+- Per-instance serial task queues with bounded cross-instance concurrency, ordering, pause/resume, retry, and cancellation.
+- Dola video flow selects the **genuinely visible** video mode, model **2.5**, and the webpage's native **30-second** option.
+- The video mode, model, duration, and optional aspect ratio are checked again immediately before clicking the visible submit button.
+- Fail-closed behavior: if visible state cannot be located or verified, submission stops instead of drawing a fake option, changing a payload, or silently using another duration.
+- Visible-page adapter diagnostics report prompt, video, 2.5, 30s, and blocked-page state.
+- Result polling only observes visible media elements on the authorized page. CAPTCHA, verification, quota, membership, and rate-limit text moves a task to human attention.
+
+### Workbench and files
+
+- Persistent storyboard workbench with one prompt per shot, target instance, aspect ratio, ordered dispatch, and task/shot association.
+- Local asset library for imported images/videos and automatically downloaded results.
+- Electron download ownership, Windows-safe filenames, progress records, result-to-task association, and reveal-in-folder.
+- Four-pane studio window: tool rail, grouped instance catalog, real browser plus automation dock, and detected-result pane.
+- Desktop completion notifications and atomic local JSON persistence.
+
+### Authenticated local automation API
+
+The optional API is disabled by default. When enabled it:
+
+- binds only to `127.0.0.1`;
+- validates the loopback `Host` header;
+- requires a random Bearer token on **every** route;
+- accepts at most 1 MB JSON request bodies;
+- omits tokens, cookies, file paths, page-script execution, and arbitrary navigation from its state API;
+- exposes only health, redacted state, validated task creation/cancellation, and opening a known instance.
+
+Example:
+
+```powershell
+$token = "TOKEN_SHOWN_IN_ORBITDESK_SETTINGS"
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:17824/v1/health `
+  -Headers @{ Authorization = "Bearer $token" }
+```
+
+Task creation uses the same validation as desktop IPC:
+
+```json
+{
+  "workspaceId": "workspace_...",
+  "prompt": "A cinematic tracking shot through a rainy neon street",
+  "kind": "video",
+  "durationSeconds": 30,
+  "quantity": 1,
+  "autoDownload": true,
+  "aspectRatio": "16:9"
+}
+```
+
+## Security and clean-room boundaries
+
+OrbitDesk intentionally does **not** implement:
+
+- capability/action-bar response mutation;
+- forced entitlement, model, or duration payload changes;
+- private or hidden generation APIs;
+- membership, quota, CAPTCHA, payment, or rate-limit bypass;
+- fingerprint spoofing or stealth automation;
+- watermark/token decoding or removal;
+- bundled proprietary skills, extensions, source, assets, or update endpoints.
+
+Remote content runs with Node integration disabled, context isolation and sandboxing enabled, insecure mixed content disabled, and navigation restricted to safe HTTPS/about schemes so official OAuth flows can work. Automation execution remains strictly constrained to adapter domains. Renderer/main IPC accepts narrow validated schemas. The dashboard never receives cookies except through an explicit user-selected export file.
+
+Cookie exports are sensitive authentication material. Store them securely, import only trusted files, and delete them when no longer needed.
 
 ## Architecture
 
 ```text
-renderer (React dashboard / workspace chrome)
-    │ contextBridge typed IPC
-preload
-    │ validated commands only
-main process
-    ├── StateStore              atomic local JSON persistence
-    ├── WorkspaceManager        BrowserWindow + WebContentsView + profile partition
-    ├── AutomationEngine        bounded queue / visible-UI actions / polling
-    ├── site adapters           selectors, labels, allowed automation hosts
-    └── DownloadManager         Electron will-download ownership and progress
+React renderer (dashboard / storyboards / library / studio chrome)
+    │ frozen contextBridge API with validated IPC
+sandboxed preload
+    │
+Electron main process
+    ├── StateStore             atomic 0600 JSON, migrations, ordering, storyboards
+    ├── WorkspaceManager       BrowserWindow + WebContentsView + unique partition
+    ├── AutomationEngine       bounded queue, visible controls, result polling
+    ├── DownloadManager        will-download ownership and result cataloging
+    ├── LibraryManager         user-selected local media import and reveal
+    ├── AutomationApiServer    authenticated loopback-only, least-privilege API
+    └── site adapters          official hosts, visible selectors and labels
 ```
-
-Remote site content runs in a sandboxed `WebContentsView` with Node integration disabled. The dashboard never receives cookies or passwords. Popup URLs and navigation are restricted to safe web schemes; automation itself additionally requires the configured site domain.
 
 ## Development
 
@@ -49,7 +106,7 @@ Requirements:
 
 ```bash
 cd apps/orbitdesk
-npm install
+npm ci
 npm run dev
 ```
 
@@ -59,7 +116,7 @@ Web-only UI preview:
 npm run dev:web
 ```
 
-The web preview does not simulate remote pages, task execution, or downloads. Its Doubao and Dola cards open the real official URLs in a new browser tab because third-party authenticated pages cannot be embedded safely in the Arena preview. Real in-app browsing requires the Electron desktop shell.
+The web preview does not simulate remote pages, tasks, cookies, or downloads. Its instance cards open the real official URLs in a normal browser tab. Real embedded browsing and automation require the Electron desktop shell.
 
 Validation:
 
@@ -75,23 +132,19 @@ Windows installer:
 npm run package:win
 ```
 
-The NSIS installer is built on a Windows GitHub Actions runner. Before wider release, the packaged application still requires an interactive Windows smoke test covering login, navigation, site permissions, and the current Doubao/Dola page structure. Version 0.2.0 uses a CommonJS sandbox preload, refuses to silently fall back to preview data, and adds the verified visible-UI Dola `30s` sequence.
+The repository workflow builds the unsigned NSIS installer on `windows-latest`. Production distribution must add Authenticode signing. The workflow also emits SHA-256 checksums so a release can be independently verified. OrbitDesk does not silently self-update from an unsigned or unpinned feed; a production updater should only be enabled after the publisher provisions code signing and a signed update manifest.
 
 ## Adapter calibration checklist
 
-1. Open one workspace and manually sign in to the official site.
-2. For Dola, remain on `https://www.dola.com/chat/` and activate its visible video-generation composer.
-3. Use **模型 2.5 · 30s** once and confirm that Dola's own model button changes from `2.0 Fast` (or another value) to `2.5`, then its duration button changes from `10s` to `30s`.
-4. Confirm that the prompt input, model `2.5`, exact `30s` option, and generate button are visible.
-5. Submit one low-cost test while keeping the page visible.
-6. Verify that the result card exposes a real `video`, `img`, or download link URL.
-7. If selectors fail, update only `src/adapters/site-adapters.ts`; do not add private endpoint calls.
-8. Re-run the local test suite and one manual authorized task.
+1. Open one instance and manually sign in to its official site.
+2. For Dola, remain on `https://www.dola.com/chat/` and expose its visible video-generation composer.
+3. Run **诊断页面** and confirm that the prompt control, model `2.5`, and native `30s` choice are visible.
+4. Use **模型 2.5 · 30s** once and confirm Dola's displayed model and duration both change.
+5. Submit one low-cost test with the page visible.
+6. Confirm the final pre-submit checks and result detection.
+7. If page structure changed, update only public visible-control rules in `src/adapters/site-adapters.ts` and `src/main/page-scripts.ts`; do not add private endpoint calls.
+8. Re-run typecheck, tests, build, and an authorized Windows smoke test.
 
-## Privacy and operations
+## Upgrade note from 0.2
 
-- Account credentials stay in the site's own login form and Chromium session storage.
-- Profile partitions share cookies only when the same profile is deliberately selected.
-- Download records contain local paths and source URLs; protect the Electron user-data directory accordingly.
-- Deleting a workspace does not silently delete browser profile data in this MVP.
-- A task timeout stops local observation only; it does not cancel a generation already submitted on the site.
+Version 0.3 uses a unique browser partition for every instance, even when instances share the same profile label. This fixes unintended Cookie sharing. Existing users may need to sign in once in each upgraded instance. Deleting an instance removes its OrbitDesk records but does not silently erase Chromium profile directories; sensitive profile cleanup remains an explicit maintenance operation.

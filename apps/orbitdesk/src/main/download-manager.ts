@@ -90,6 +90,24 @@ export class DownloadManager {
         totalBytes: item.getTotalBytes(),
         ...(status === "completed" ? { completedAt: new Date().toISOString() } : { error: `下载状态：${state}` }),
       });
+      if (status === "completed" && record.assetId) {
+        const sourceAsset = this.#store.snapshot().assets.find((asset) => asset.id === record.assetId);
+        if (sourceAsset && !this.#store.snapshot().libraryAssets.some((asset) => asset.localPath === savePath)) {
+          this.#store.addLibraryAssets([{
+            id: safeId("library"),
+            name: filename,
+            kind: sourceAsset.kind,
+            localPath: savePath,
+            bytes: item.getReceivedBytes(),
+            extension: extname(filename).toLowerCase(),
+            tags: ["生成结果"],
+            source: "download",
+            workspaceId,
+            ...(record.taskId ? { taskId: record.taskId } : {}),
+            createdAt: new Date().toISOString(),
+          }]);
+        }
+      }
     });
   }
 }

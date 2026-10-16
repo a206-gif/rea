@@ -1,95 +1,116 @@
+import { BrowserWindow, WebContentsView, session, type Cookie, type Rectangle } from "electron";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
-import {
-  BrowserWindow,
-  WebContentsView,
-  session,
-  type Rectangle,
-} from "electron";
 import { adapterFor, isAllowedSiteUrl } from "../adapters/site-adapters.js";
 import type {
+  AdapterProbe,
   BrowserBounds,
   BrowserCommand,
-  BrowserPageActionResult,
-  DetectedAsset,
+  PageActionResult,
   Workspace,
   WorkspaceEvent,
 } from "../shared/contracts.js";
-import type { AutomationWorkspacePort } from "./automation-engine.js";
-import type { DownloadManager } from "./download-manager.js";
-import { buildDurationSelectionScript } from "./page-scripts.js";
+import { buildDurationSelectionScript, buildProbeScript } from "./page-scripts.js";
 import type { StateStore } from "./store.js";
+import type { DownloadManager } from "./download-manager.js";
 
 interface WorkspaceRuntime {
   window: BrowserWindow;
   view: WebContentsView;
-  ready: boolean;
+  bounds: BrowserBounds;
 }
 
-export class WorkspaceManager extends EventEmitter implements AutomationWorkspacePort {
+interface PortableCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  expirationDate?: number;
+  sameSite?: "unspecified" | "no_restriction" | "lax" | "strict";
+}
+
+export class WorkspaceManager extends EventEmitter {
   readonly #store: StateStore;
-  readonly #downloads: DownloadManager;
+  readonly #downloadManager: DownloadManager;
   readonly #preloadPath: string;
-  readonly #rendererEntry: string;
+  readonly #rendererUrl: string;
   readonly #runtimes = new Map<string, WorkspaceRuntime>();
 
-  constructor(
-    store: StateStore,
-    downloads: DownloadManager,
-    preloadPath: string,
-    rendererEntry: string,
-  ) {
+  constructor(store: StateStore, downloadManager: DownloadManager, preloadPath: string, rendererUrl: string) {
     super();
     this.#store = store;
-    this.#downloads = downloads;
+    this.#downloadManager = downloadManager;
     this.#preloadPath = preloadPath;
-    this.#rendererEntry = rendererEntry;
+    this.#rendererUrl = rendererUrl;
+  }
+
+  hasOpenWorkspace(workspaceId: string): boolean {
+    return this.#runtimes.has(workspaceId);
   }
 
   async ensureOpen(workspace: Workspace): Promise<void> {
-    const existing = this.#runtimes.get(workspace.id);
-    if (existing && !existing.window.isDestroyed()) {
-      existing.window.show();
-      existing.window.focus();
-      return;
-    }
     await this.open(workspace.id);
   }
 
+  async waitUntilReady(workspaceId: string, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const status = this.#store.getWorkspace(workspaceId).status;
+      if (status === "ready" || status === "working") return;
+      if (status === "error" || status === "needs_attention") throw new Error(this.#store.getWorkspace(workspaceId).lastError || "实例未就绪");
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error("等待浏览器实例就绪超时");
+  }
+
+  evaluate<T>(workspaceId: string, script: string): Promise<T> {
+    return this.execute<T>(workspaceId, script);
+  }
+
+  async requestDownload(asset: import("../shared/contracts.js").DetectedAsset): Promise<void> {
+    const contents = this.getWebContents(asset.workspaceId);
+    if (!contents) throw new Error("浏览器实例尚未打开");
+    this.#downloadManager.request(contents, asset);
+  }
+
+  closeAll(): void {
+    for (const runtime of this.#runtimes.values()) runtime.window.close();
+  }
+
   async open(workspaceId: string): Promise<void> {
-    const workspace = this.#store.requireWorkspace(workspaceId);
     const existing = this.#runtimes.get(workspaceId);
-    if (existing && !existing.window.isDestroyed()) {
+    if (existing) {
       existing.window.show();
       existing.window.focus();
       return;
     }
 
-    this.#store.setWorkspaceStatus(workspaceId, "opening", {
-      lastOpenedAt: new Date().toISOString(),
-      lastError: undefined,
-    });
+    const workspace = this.#store.getWorkspace(workspaceId);
+    this.#store.patchWorkspace(workspaceId, { status: "opening", lastError: undefined });
+    const persistentSession = this.#sessionFor(workspace);
+    await this.#applyProxyToSession(workspace, persistentSession);
+    persistentSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    persistentSession.setPermissionCheckHandler(() => false);
+
     const window = new BrowserWindow({
-      width: 1380,
-      height: 900,
+      width: 1520,
+      height: 940,
       minWidth: 1120,
-      minHeight: 720,
-      backgroundColor: "#f6f7f4",
-      title: `${workspace.name} · OrbitDesk`,
+      minHeight: 700,
+      backgroundColor: "#111412",
       show: false,
-      autoHideMenuBar: true,
+      title: `${workspace.name} · OrbitDesk`,
       webPreferences: {
         preload: this.#preloadPath,
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
+        webSecurity: true,
       },
     });
-
-    const partition = `persist:orbitdesk-${safePartition(workspace.profileId)}`;
-    const persistentSession = session.fromPartition(partition, { cache: true });
-    persistentSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    persistentSession.setPermissionCheckHandler(() => false);
+    window.removeMenu();
 
     const view = new WebContentsView({
       webPreferences: {
@@ -97,27 +118,52 @@ export class WorkspaceManager extends EventEmitter implements AutomationWorkspac
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,
-        javascript: true,
         webSecurity: true,
+        allowRunningInsecureContent: false,
       },
     });
     window.contentView.addChildView(view);
-    view.setBounds({ x: 16, y: 102, width: 1348, height: 760 });
-    view.setBackgroundColor("#ffffff");
-    this.#downloads.register(persistentSession, view.webContents, workspaceId);
-
-    const runtime: WorkspaceRuntime = { window, view, ready: false };
+    const runtime: WorkspaceRuntime = {
+      window,
+      view,
+      bounds: { x: 233, y: 45, width: 1_140, height: 735 },
+    };
     this.#runtimes.set(workspaceId, runtime);
+    this.#downloadManager.register(persistentSession, view.webContents, workspaceId);
     this.#wireRuntime(workspace, runtime);
 
-    window.once("ready-to-show", () => window.show());
-    await loadRenderer(window, this.#rendererEntry, `workspace=${encodeURIComponent(workspaceId)}`);
-    await this.#loadWorkspaceUrl(workspace, view);
-    if (!window.isVisible()) window.show();
+    await this.#loadShell(window, workspaceId);
+    view.setBounds(runtime.bounds);
+    try {
+      if (workspace.siteId === "demo") {
+        const demoPath = fileURLToPath(new URL("../../dist/demo-generator.html", import.meta.url));
+        await view.webContents.loadFile(demoPath);
+      } else {
+        await view.webContents.loadURL(workspace.currentUrl ?? workspace.startUrl);
+      }
+    } catch (error) {
+      this.#store.patchWorkspace(workspaceId, { status: "error", lastError: errorMessage(error) });
+      this.#emit(workspaceId, "status", `页面加载失败：${errorMessage(error)}`);
+    }
+    window.show();
+  }
+
+  close(workspaceId: string): void {
+    this.#runtimes.get(workspaceId)?.window.close();
+  }
+
+  async applyWorkspaceNetworkSettings(workspaceId: string): Promise<void> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const persistentSession = this.#sessionFor(workspace);
+    await this.#applyProxyToSession(workspace, persistentSession);
+    await persistentSession.closeAllConnections();
+    const runtime = this.#runtimes.get(workspaceId);
+    if (runtime) await runtime.view.webContents.reload();
   }
 
   setBounds(workspaceId: string, bounds: BrowserBounds): void {
-    const runtime = this.#requireRuntime(workspaceId);
+    const runtime = this.#runtimes.get(workspaceId);
+    if (!runtime) return;
     const contentBounds = runtime.window.getContentBounds();
     const rectangle: Rectangle = {
       x: Math.max(0, Math.min(bounds.x, contentBounds.width - 120)),
@@ -125,152 +171,205 @@ export class WorkspaceManager extends EventEmitter implements AutomationWorkspac
       width: Math.max(120, Math.min(bounds.width, contentBounds.width - bounds.x)),
       height: Math.max(120, Math.min(bounds.height, contentBounds.height - bounds.y)),
     };
+    runtime.bounds = rectangle;
     runtime.view.setBounds(rectangle);
   }
 
   command(workspaceId: string, command: BrowserCommand): void {
-    const workspace = this.#store.requireWorkspace(workspaceId);
-    const contents = this.#requireRuntime(workspaceId).view.webContents;
-    if (command === "back" && contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack();
-    if (command === "forward" && contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward();
+    const runtime = this.#runtimes.get(workspaceId);
+    if (!runtime) throw new Error("浏览器实例尚未打开");
+    const contents = runtime.view.webContents;
+    if (command === "back" && contents.canGoBack()) contents.goBack();
+    if (command === "forward" && contents.canGoForward()) contents.goForward();
     if (command === "reload") contents.reload();
-    if (command === "home") void contents.loadURL(workspace.startUrl);
+    if (command === "home") void contents.loadURL(this.#store.getWorkspace(workspaceId).startUrl);
+    if (command === "devtools") contents.openDevTools({ mode: "detach" });
   }
 
-  async selectThirtySeconds(workspaceId: string): Promise<BrowserPageActionResult> {
-    const workspace = this.#store.requireWorkspace(workspaceId);
-    await this.waitUntilReady(workspaceId, 30_000);
-    return this.evaluate<BrowserPageActionResult>(
-      workspaceId,
-      buildDurationSelectionScript(adapterFor(workspace.siteId)),
-    );
-  }
-
-  async waitUntilReady(workspaceId: string, timeoutMs: number): Promise<void> {
-    const runtime = this.#requireRuntime(workspaceId);
-    if (runtime.ready && !runtime.view.webContents.isLoading()) return;
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error("等待站点页面加载超时"));
-      }, timeoutMs);
-      const onReady = () => {
-        cleanup();
-        resolve();
-      };
-      const cleanup = () => {
-        clearTimeout(timeout);
-        runtime.view.webContents.off("did-finish-load", onReady);
-      };
-      runtime.view.webContents.once("did-finish-load", onReady);
-    });
-  }
-
-  async evaluate<T>(workspaceId: string, script: string): Promise<T> {
-    const workspace = this.#store.requireWorkspace(workspaceId);
-    const runtime = this.#requireRuntime(workspaceId);
+  async execute<T>(workspaceId: string, script: string): Promise<T> {
+    const runtime = this.#runtimes.get(workspaceId);
+    if (!runtime) throw new Error("浏览器实例尚未打开");
+    const workspace = this.#store.getWorkspace(workspaceId);
     const currentUrl = runtime.view.webContents.getURL();
-    if (
-      workspace.siteId !== "demo" &&
-      !isAllowedSiteUrl(adapterFor(workspace.siteId), currentUrl)
-    ) {
-      throw new Error("当前页面不是已配置的生成站点；请先完成登录并返回生成页面");
-    }
-    return (await runtime.view.webContents.executeJavaScript(script, true)) as T;
+    const allowedPage = workspace.siteId === "demo" ? currentUrl.startsWith("file://") : isAllowedSiteUrl(adapterFor(workspace.siteId), currentUrl);
+    if (!allowedPage) throw new Error("当前页面不是该实例允许的官方站点");
+    return runtime.view.webContents.executeJavaScript(script, true) as Promise<T>;
   }
 
-  async requestDownload(asset: DetectedAsset): Promise<void> {
-    const runtime = this.#requireRuntime(asset.workspaceId);
-    this.#downloads.request(runtime.view.webContents, asset);
+  async selectThirtySeconds(workspaceId: string): Promise<PageActionResult> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const runtime = this.#runtimes.get(workspaceId);
+    if (!runtime) throw new Error("浏览器实例尚未打开");
+    const url = runtime.view.webContents.getURL();
+    if (!(workspace.siteId === "demo" ? url.startsWith("file://") : isAllowedSiteUrl(adapterFor(workspace.siteId), url))) throw new Error("当前页面不属于实例允许的官方站点");
+    const result = await this.execute<PageActionResult>(workspaceId, buildDurationSelectionScript(adapterFor(workspace.siteId)));
+    this.#emit(workspaceId, "automation", result.message);
+    return result;
   }
 
-  closeAll(): void {
-    for (const runtime of this.#runtimes.values()) {
-      if (!runtime.window.isDestroyed()) runtime.window.destroy();
+  async probe(workspaceId: string): Promise<AdapterProbe> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const runtime = this.#runtimes.get(workspaceId);
+    if (!runtime) throw new Error("浏览器实例尚未打开");
+    const currentUrl = runtime.view.webContents.getURL();
+    if (!(workspace.siteId === "demo" ? currentUrl.startsWith("file://") : isAllowedSiteUrl(adapterFor(workspace.siteId), currentUrl))) throw new Error("当前页面不属于实例允许的官方站点");
+    const observed = await this.execute<Omit<AdapterProbe, "workspaceId" | "checkedAt">>(workspaceId, buildProbeScript(adapterFor(workspace.siteId)));
+    const result = { ...observed, workspaceId, checkedAt: new Date().toISOString() };
+    this.#emit(workspaceId, "automation", result.thirtySecondsVisible ? "页面诊断：已发现可见 2.5 / 30s 控件" : "页面诊断：未确认可见 2.5 / 30s 控件");
+    return result;
+  }
+
+  async exportCookies(workspaceId: string): Promise<PortableCookie[]> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const cookies = await this.#sessionFor(workspace).cookies.get({});
+    return cookies
+      .filter((cookie) => cookieBelongsToWorkspace(cookie, workspace))
+      .map(({ name, value, domain, path, secure, httpOnly, expirationDate, sameSite }) => ({
+        name, value, domain, path, secure, httpOnly, expirationDate, sameSite,
+      }));
+  }
+
+  async importCookies(workspaceId: string, values: unknown[]): Promise<{ imported: number; skipped: number }> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const targetSession = this.#sessionFor(workspace);
+    let imported = 0;
+    let skipped = 0;
+    for (const value of values) {
+      const cookie = portableCookie(value);
+      if (!cookie || !cookieBelongsToWorkspace(cookie, workspace)) {
+        skipped += 1;
+        continue;
+      }
+      const hostname = (cookie.domain ?? new URL(workspace.startUrl).hostname).replace(/^\./, "");
+      const url = `${cookie.secure === false ? "http" : "https"}://${hostname}${cookie.path || "/"}`;
+      try {
+        await targetSession.cookies.set({
+          url,
+          name: cookie.name,
+          value: cookie.value,
+          ...(cookie.domain ? { domain: cookie.domain } : {}),
+          ...(cookie.path ? { path: cookie.path } : {}),
+          ...(typeof cookie.secure === "boolean" ? { secure: cookie.secure } : {}),
+          ...(typeof cookie.httpOnly === "boolean" ? { httpOnly: cookie.httpOnly } : {}),
+          ...(cookie.expirationDate ? { expirationDate: cookie.expirationDate } : {}),
+          ...(cookie.sameSite ? { sameSite: cookie.sameSite } : {}),
+        });
+        imported += 1;
+      } catch {
+        skipped += 1;
+      }
     }
-    this.#runtimes.clear();
+    return { imported, skipped };
+  }
+
+  getWebContents(workspaceId: string) {
+    return this.#runtimes.get(workspaceId)?.view.webContents;
+  }
+
+  #sessionFor(workspace: Workspace) {
+    // Every instance gets a unique persistent partition. The profile is a label, not a shared cookie jar.
+    return session.fromPartition(`persist:orbitdesk-workspace-${workspace.id}`, { cache: true });
+  }
+
+  async #applyProxyToSession(workspace: Workspace, persistentSession: Electron.Session): Promise<void> {
+    if (workspace.proxy.mode === "fixed_servers" && workspace.proxy.server) {
+      await persistentSession.setProxy({ proxyRules: workspace.proxy.server, proxyBypassRules: workspace.proxy.bypassRules || "<-loopback>" });
+    } else {
+      await persistentSession.setProxy({ mode: "direct" });
+    }
+  }
+
+  async #loadShell(window: BrowserWindow, workspaceId: string): Promise<void> {
+    await loadRenderer(window, this.#rendererUrl, { workspace: workspaceId });
   }
 
   #wireRuntime(workspace: Workspace, runtime: WorkspaceRuntime): void {
     const { window, view } = runtime;
-    const send = (event: WorkspaceEvent) => {
-      this.emit("workspace-event", event);
-      if (!window.isDestroyed()) window.webContents.send("workspace:event", event);
-    };
-    view.webContents.on("did-start-loading", () => {
-      runtime.ready = false;
-      this.#store.setWorkspaceStatus(workspace.id, "opening");
-      send({ workspaceId: workspace.id, type: "status", value: "正在加载", at: new Date().toISOString() });
-    });
-    view.webContents.on("did-finish-load", () => {
-      runtime.ready = true;
-      this.#store.setWorkspaceStatus(workspace.id, "ready", {
-        currentUrl: view.webContents.getURL(),
-        lastError: undefined,
-      });
-      send({ workspaceId: workspace.id, type: "status", value: "页面已就绪", at: new Date().toISOString() });
-    });
-    view.webContents.on("did-fail-load", (_event, code, description, validatedUrl, isMainFrame) => {
-      if (!isMainFrame || code === -3) return;
-      const message = `${description} (${code})`;
-      this.#store.setWorkspaceStatus(workspace.id, "error", { currentUrl: validatedUrl, lastError: message });
-      send({ workspaceId: workspace.id, type: "status", value: message, at: new Date().toISOString() });
-    });
-    view.webContents.on("did-navigate", (_event, url) => {
-      this.#store.setWorkspaceStatus(workspace.id, runtime.ready ? "ready" : "opening", { currentUrl: url });
-      send({ workspaceId: workspace.id, type: "url", value: url, at: new Date().toISOString() });
-    });
-    view.webContents.on("page-title-updated", (_event, title) => {
-      send({ workspaceId: workspace.id, type: "title", value: title, at: new Date().toISOString() });
-    });
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      if (isSafeWebNavigation(url)) void view.webContents.loadURL(url);
+    const contents = view.webContents;
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isSafeWebNavigation(url)) void contents.loadURL(url);
       return { action: "deny" };
     });
-    view.webContents.on("will-navigate", (event, url) => {
+    contents.on("will-navigate", (event, url) => {
       const localDemo = workspace.siteId === "demo" && url.startsWith("file://");
-      if (!localDemo && !isSafeWebNavigation(url)) event.preventDefault();
+      if (!localDemo && !isSafeWebNavigation(url)) {
+        event.preventDefault();
+        this.#emit(workspace.id, "status", "已阻止不安全的页面导航");
+      }
     });
+    contents.on("did-start-loading", () => {
+      this.#store.patchWorkspace(workspace.id, { status: "opening" });
+      this.#emit(workspace.id, "status", "正在加载官方网页");
+    });
+    contents.on("did-finish-load", () => {
+      const currentUrl = contents.getURL();
+      this.#store.patchWorkspace(workspace.id, {
+        currentUrl,
+        status: "ready",
+        lastOpenedAt: new Date().toISOString(),
+        lastError: undefined,
+      });
+      this.#emit(workspace.id, "url", currentUrl);
+      this.#emit(workspace.id, "title", contents.getTitle());
+      this.#emit(workspace.id, "status", "官方网页已就绪，请手动登录或开始任务");
+    });
+    contents.on("did-fail-load", (_event, errorCode, errorDescription) => {
+      if (errorCode === -3) return;
+      this.#store.patchWorkspace(workspace.id, { status: "error", lastError: errorDescription });
+      this.#emit(workspace.id, "status", `网页错误：${errorDescription}`);
+    });
+    const publishNavigation = (url: string) => {
+      this.#store.patchWorkspace(workspace.id, { currentUrl: url });
+      this.#emit(workspace.id, "url", url);
+    };
+    contents.on("did-navigate", (_event, url) => publishNavigation(url));
+    contents.on("did-navigate-in-page", (_event, url) => publishNavigation(url));
+    contents.on("page-title-updated", (_event, title) => this.#emit(workspace.id, "title", title));
+    window.on("resize", () => view.setBounds(runtime.bounds));
     window.on("closed", () => {
       this.#runtimes.delete(workspace.id);
-      this.#store.setWorkspaceStatus(workspace.id, "offline");
+      this.#store.patchWorkspace(workspace.id, { status: "offline" });
     });
   }
 
-  async #loadWorkspaceUrl(workspace: Workspace, view: WebContentsView): Promise<void> {
-    if (workspace.siteId === "demo") {
-      const demoPath = fileURLToPath(new URL("../../dist/demo-generator.html", import.meta.url));
-      await view.webContents.loadFile(demoPath);
-      return;
-    }
-    if (!isAllowedSiteUrl(adapterFor(workspace.siteId), workspace.startUrl)) {
-      throw new Error("工作区 URL 不属于允许站点");
-    }
-    await view.webContents.loadURL(workspace.startUrl);
-  }
-
-  #requireRuntime(workspaceId: string): WorkspaceRuntime {
-    const runtime = this.#runtimes.get(workspaceId);
-    if (!runtime || runtime.window.isDestroyed()) throw new Error("工作区窗口尚未打开");
-    return runtime;
+  #emit(workspaceId: string, type: WorkspaceEvent["type"], value: string): void {
+    this.emit("workspace-event", { workspaceId, type, value, at: new Date().toISOString() } satisfies WorkspaceEvent);
   }
 }
 
-export async function loadRenderer(
-  window: BrowserWindow,
-  rendererEntry: string,
-  query = "",
-): Promise<void> {
-  if (rendererEntry.startsWith("http://") || rendererEntry.startsWith("https://")) {
-    const separator = rendererEntry.includes("?") ? "&" : "?";
-    await window.loadURL(`${rendererEntry}${query ? `${separator}${query}` : ""}`);
-    return;
-  }
-  await window.loadFile(rendererEntry, query ? { query: Object.fromEntries(new URLSearchParams(query)) } : undefined);
+function cookieBelongsToWorkspace(cookie: Pick<Cookie, "domain"> | PortableCookie, workspace: Workspace): boolean {
+  const adapter = adapterFor(workspace.siteId);
+  const domain = (cookie.domain || new URL(workspace.startUrl).hostname).replace(/^\./, "").toLowerCase();
+  return adapter.allowedHosts.some((allowed) => domain === allowed || domain.endsWith(`.${allowed}`));
 }
 
-function safePartition(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+function portableCookie(value: unknown): PortableCookie | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.name !== "string" || !input.name || typeof input.value !== "string") return undefined;
+  const sameSite = ["unspecified", "no_restriction", "lax", "strict"].includes(String(input.sameSite))
+    ? input.sameSite as PortableCookie["sameSite"]
+    : undefined;
+  return {
+    name: input.name,
+    value: input.value,
+    ...(typeof input.domain === "string" ? { domain: input.domain } : {}),
+    ...(typeof input.path === "string" ? { path: input.path } : {}),
+    ...(typeof input.secure === "boolean" ? { secure: input.secure } : {}),
+    ...(typeof input.httpOnly === "boolean" ? { httpOnly: input.httpOnly } : {}),
+    ...(typeof input.expirationDate === "number" ? { expirationDate: input.expirationDate } : {}),
+    ...(sameSite ? { sameSite } : {}),
+  };
+}
+
+export async function loadRenderer(window: BrowserWindow, rendererEntry: string, query?: Record<string, string>): Promise<void> {
+  if (/^https?:\/\//i.test(rendererEntry)) {
+    const target = new URL(rendererEntry);
+    for (const [key, value] of Object.entries(query ?? {})) target.searchParams.set(key, value);
+    await window.loadURL(target.toString());
+  } else {
+    await window.loadFile(rendererEntry, query ? { query } : undefined);
+  }
 }
 
 function isSafeWebNavigation(rawUrl: string): boolean {
@@ -280,4 +379,8 @@ function isSafeWebNavigation(rawUrl: string): boolean {
   } catch {
     return false;
   }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
