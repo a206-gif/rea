@@ -22,7 +22,7 @@ const ipcChannels = [
   "state:get", "workspace:create", "workspace:update", "workspace:move", "workspace:remove", "workspace:open",
   "task:create", "task:move", "task:pause", "task:resume", "task:cancel", "task:retry",
   "storyboard:save", "storyboard:delete", "storyboard:queue", "settings:update", "settings:rotate-api-token", "browser:bounds",
-  "browser:command", "browser:select-thirty", "browser:probe", "session:export-cookies", "session:import-cookies",
+  "browser:command", "browser:select-thirty", "browser:probe", "workspace:diagnose-network", "session:export-cookies", "session:import-cookies",
   "library:import", "library:remove", "library:reveal", "asset:download", "download:reveal",
 ] as const;
 
@@ -112,6 +112,7 @@ export function registerIpc(
   });
   ipcMain.handle("browser:select-thirty", (_event, workspaceId: unknown) => workspaceManager.selectThirtySeconds(requiredId(workspaceId, "实例")));
   ipcMain.handle("browser:probe", (_event, workspaceId: unknown) => workspaceManager.probe(requiredId(workspaceId, "实例")));
+  ipcMain.handle("workspace:diagnose-network", (_event, workspaceId: unknown) => workspaceManager.diagnoseNetwork(requiredId(workspaceId, "实例")));
 
   ipcMain.handle("session:export-cookies", async (_event, workspaceId: unknown) => {
     const id = requiredId(workspaceId, "实例");

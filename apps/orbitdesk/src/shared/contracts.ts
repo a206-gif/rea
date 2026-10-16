@@ -23,7 +23,8 @@ export interface LoginProfile {
 }
 
 export interface ProxyConfig {
-  mode: "direct" | "fixed_servers";
+  /** "system" follows the Windows/VPN proxy; "direct" intentionally bypasses it. */
+  mode: "system" | "direct" | "fixed_servers";
   /** Chromium proxy rule such as http://127.0.0.1:7890 or socks5://host:1080. */
   server?: string;
   bypassRules?: string;
@@ -165,7 +166,19 @@ export interface AdapterProbe {
   checkedAt: string;
 }
 
+export interface NetworkDiagnostics {
+  workspaceId: string;
+  configuredMode: ProxyConfig["mode"];
+  configuredServer?: string;
+  resolvedProxy: string;
+  currentUrl?: string;
+  regionRestricted: boolean;
+  message: string;
+  checkedAt: string;
+}
+
 export interface StateSnapshot {
+  schemaVersion: number;
   profiles: LoginProfile[];
   workspaces: Workspace[];
   tasks: GenerationTask[];
@@ -264,6 +277,7 @@ export interface OrbitApi {
   browserCommand(workspaceId: string, command: BrowserCommand): Promise<void>;
   selectThirtySeconds(workspaceId: string): Promise<PageActionResult>;
   probeWorkspace(workspaceId: string): Promise<AdapterProbe>;
+  diagnoseWorkspaceNetwork(workspaceId: string): Promise<NetworkDiagnostics>;
   exportWorkspaceCookies(workspaceId: string): Promise<SessionTransferResult | undefined>;
   importWorkspaceCookies(workspaceId: string): Promise<SessionTransferResult | undefined>;
   importLibraryAssets(): Promise<LibraryAsset[]>;

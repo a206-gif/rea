@@ -35,6 +35,7 @@ const api: OrbitApi = {
   browserCommand: (workspaceId: string, command: BrowserCommand) => ipcRenderer.invoke("browser:command", workspaceId, command),
   selectThirtySeconds: (workspaceId: string) => ipcRenderer.invoke("browser:select-thirty", workspaceId),
   probeWorkspace: (workspaceId: string) => ipcRenderer.invoke("browser:probe", workspaceId),
+  diagnoseWorkspaceNetwork: (workspaceId: string) => ipcRenderer.invoke("workspace:diagnose-network", workspaceId),
   exportWorkspaceCookies: (workspaceId: string) => ipcRenderer.invoke("session:export-cookies", workspaceId),
   importWorkspaceCookies: (workspaceId: string) => ipcRenderer.invoke("session:import-cookies", workspaceId),
   importLibraryAssets: () => ipcRenderer.invoke("library:import"),

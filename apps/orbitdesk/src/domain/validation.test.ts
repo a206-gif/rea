@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { validateProxy, validateStoryboardInput, validateTaskInput } from "./validation";
 
 describe("expanded clean-room input validation", () => {
-  it("accepts only explicit supported proxy schemes", () => {
+  it("accepts system/VPN routing and only explicit supported proxy schemes", () => {
+    expect(validateProxy({ mode: "system" })).toEqual({ mode: "system" });
     expect(validateProxy({ mode: "fixed_servers", server: "socks5://127.0.0.1:1080" })).toMatchObject({ mode: "fixed_servers" });
     expect(() => validateProxy({ mode: "fixed_servers", server: "file:///tmp/socket" })).toThrow(/代理服务器/);
   });

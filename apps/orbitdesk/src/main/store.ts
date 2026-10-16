@@ -24,10 +24,16 @@ import type {
 } from "../shared/contracts.js";
 
 const activeTaskStatuses = new Set<TaskStatus>(["queued", "preparing", "submitting", "awaiting_result", "downloading"]);
+const currentSchemaVersion = 3;
+const stateBroadcastDelayMs = 100;
+const statePersistDelayMs = 500;
 
 export class StateStore extends EventEmitter {
   readonly #filePath: string;
   #state: StateSnapshot;
+  #dirty = false;
+  #emitTimer?: NodeJS.Timeout;
+  #persistTimer?: NodeJS.Timeout;
 
   constructor(filePath: string, downloadDirectory: string) {
     super();
@@ -61,7 +67,7 @@ export class StateStore extends EventEmitter {
       status: "offline",
       group: input.group?.trim() || "默认分组",
       order: nextOrder(this.#state.workspaces),
-      proxy: input.proxy ?? { mode: "direct" },
+      proxy: input.proxy ?? { mode: "system" },
       createdAt: now,
     };
     this.#state.workspaces.push(workspace);
@@ -282,11 +288,13 @@ export class StateStore extends EventEmitter {
     const fallback = createDefaultState(downloadDirectory);
     try {
       const raw = JSON.parse(readFileSync(this.#filePath, "utf8")) as Partial<StateSnapshot>;
+      const sourceSchemaVersion = Number(raw.schemaVersion ?? 2);
       const settings = { ...fallback.settings, ...(raw.settings ?? {}) };
       if (!settings.automationApiToken || settings.automationApiToken.length < 32) {
         settings.automationApiToken = randomBytes(32).toString("base64url");
       }
       return {
+        schemaVersion: currentSchemaVersion,
         profiles: raw.profiles?.length ? raw.profiles : fallback.profiles,
         workspaces: (raw.workspaces ?? fallback.workspaces).map((workspace, index) => ({
           ...workspace,
@@ -294,7 +302,9 @@ export class StateStore extends EventEmitter {
           lastError: undefined,
           group: workspace.group || "默认分组",
           order: Number.isInteger(workspace.order) ? workspace.order : index,
-          proxy: workspace.proxy ?? { mode: "direct" },
+          proxy: sourceSchemaVersion < currentSchemaVersion && (!workspace.proxy || workspace.proxy.mode === "direct")
+            ? { mode: "system" as const }
+            : workspace.proxy ?? { mode: "system" as const },
         })),
         tasks: (raw.tasks ?? []).map((task, index) => ({
           ...task,
@@ -315,9 +325,30 @@ export class StateStore extends EventEmitter {
     }
   }
 
+  flush(): void {
+    if (this.#persistTimer) clearTimeout(this.#persistTimer);
+    if (this.#emitTimer) clearTimeout(this.#emitTimer);
+    this.#persistTimer = undefined;
+    this.#emitTimer = undefined;
+    if (this.#dirty) this.#persist();
+  }
+
   #commit(): void {
-    this.#persist();
-    this.emit("changed", this.snapshot());
+    this.#dirty = true;
+    if (!this.#emitTimer) {
+      this.#emitTimer = setTimeout(() => {
+        this.#emitTimer = undefined;
+        this.emit("changed", this.snapshot());
+      }, stateBroadcastDelayMs);
+      this.#emitTimer.unref();
+    }
+    if (!this.#persistTimer) {
+      this.#persistTimer = setTimeout(() => {
+        this.#persistTimer = undefined;
+        this.#persist();
+      }, statePersistDelayMs);
+      this.#persistTimer.unref();
+    }
   }
 
   #persist(): void {
@@ -325,6 +356,7 @@ export class StateStore extends EventEmitter {
     const temporaryPath = `${this.#filePath}.tmp`;
     writeFileSync(temporaryPath, JSON.stringify(this.#state, null, 2), { encoding: "utf8", mode: 0o600 });
     renameSync(temporaryPath, this.#filePath);
+    this.#dirty = false;
   }
 }
 
@@ -341,6 +373,7 @@ function createDefaultState(downloadDirectory: string): StateSnapshot {
     createdAt: now,
   };
   return {
+    schemaVersion: currentSchemaVersion,
     profiles: [profile],
     workspaces: [
       {
@@ -352,7 +385,7 @@ function createDefaultState(downloadDirectory: string): StateSnapshot {
         status: "offline",
         group: "默认分组",
         order: 0,
-        proxy: { mode: "direct" },
+        proxy: { mode: "system" },
         createdAt: now,
       },
       {
@@ -364,7 +397,7 @@ function createDefaultState(downloadDirectory: string): StateSnapshot {
         status: "offline",
         group: "默认分组",
         order: 1,
-        proxy: { mode: "direct" },
+        proxy: { mode: "system" },
         createdAt: now,
       },
     ],

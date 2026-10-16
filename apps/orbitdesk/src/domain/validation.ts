@@ -38,7 +38,8 @@ export function validateWorkspaceUpdate(value: unknown, siteId: SiteId): UpdateW
 }
 
 export function validateProxy(value: unknown): ProxyConfig {
-  if (!isRecord(value) || (value.mode !== "direct" && value.mode !== "fixed_servers")) throw new Error("代理配置无效");
+  if (!isRecord(value) || !["system", "direct", "fixed_servers"].includes(String(value.mode))) throw new Error("代理配置无效");
+  if (value.mode === "system") return { mode: "system" };
   if (value.mode === "direct") return { mode: "direct" };
   const server = requiredText(value.server, "代理服务器", 300);
   if (!/^(https?|socks4|socks5):\/\/[a-z0-9._\-\[\]:]+$/i.test(server)) {

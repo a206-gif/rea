@@ -19,10 +19,11 @@ const iso = (offsetMinutes: number) => new Date(now + offsetMinutes * 60_000).to
 
 export function createDemoApi(): OrbitApi {
   let state: StateSnapshot = {
+    schemaVersion: 3,
     profiles: [{ id: "profile_primary", name: "网页预览档案", color: "#6f59e8", createdAt: iso(-10) }],
     workspaces: [
-      { id: "workspace_doubao", name: "豆包官方网站", siteId: "doubao", profileId: "profile_primary", startUrl: "https://www.doubao.com/", status: "offline", group: "内容组", order: 0, proxy: { mode: "direct" }, createdAt: iso(-8) },
-      { id: "workspace_dola", name: "Dola 30s 工作台", siteId: "dola", profileId: "profile_primary", startUrl: "https://www.dola.com/chat/", status: "offline", group: "内容组", order: 1, proxy: { mode: "direct" }, createdAt: iso(-7) },
+      { id: "workspace_doubao", name: "豆包官方网站", siteId: "doubao", profileId: "profile_primary", startUrl: "https://www.doubao.com/", status: "offline", group: "内容组", order: 0, proxy: { mode: "system" }, createdAt: iso(-8) },
+      { id: "workspace_dola", name: "Dola 30s 工作台", siteId: "dola", profileId: "profile_primary", startUrl: "https://www.dola.com/chat/", status: "offline", group: "内容组", order: 1, proxy: { mode: "system" }, createdAt: iso(-7) },
     ],
     tasks: [], assets: [], libraryAssets: [], storyboards: [], downloads: [],
     settings: {
@@ -46,7 +47,7 @@ export function createDemoApi(): OrbitApi {
       const workspace = {
         id: safeId("workspace"), name: input.name, siteId: input.siteId, profileId: input.profileId,
         startUrl: input.startUrl || adapterFor(input.siteId).baseUrl, status: "offline" as const,
-        group: input.group || "默认分组", order: state.workspaces.length, proxy: input.proxy || { mode: "direct" as const }, createdAt: new Date().toISOString(),
+        group: input.group || "默认分组", order: state.workspaces.length, proxy: input.proxy || { mode: "system" as const }, createdAt: new Date().toISOString(),
       };
       state = { ...state, workspaces: [...state.workspaces, workspace] }; publish(); return workspace;
     },
@@ -78,6 +79,7 @@ export function createDemoApi(): OrbitApi {
     async browserCommand(workspaceId: string, command: BrowserCommand) { const event: WorkspaceEvent = { workspaceId, type: "automation", value: `网页预览：${command}`, at: new Date().toISOString() }; for (const listener of workspaceListeners) listener(event); },
     async selectThirtySeconds() { return desktopOnly(); },
     async probeWorkspace() { return desktopOnly(); },
+    async diagnoseWorkspaceNetwork() { return desktopOnly(); },
     async exportWorkspaceCookies() { return desktopOnly(); }, async importWorkspaceCookies() { return desktopOnly(); },
     async importLibraryAssets() { return desktopOnly(); }, async removeLibraryAsset() { return desktopOnly(); }, async revealLibraryAsset() { return desktopOnly(); },
     async downloadAsset() { return desktopOnly(); }, async revealDownload() { return desktopOnly(); },

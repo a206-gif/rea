@@ -12,20 +12,24 @@ import { loadRenderer, WorkspaceManager } from "./workspace-manager.js";
 
 const currentDirectory = fileURLToPath(new URL(".", import.meta.url));
 let controllerWindow: BrowserWindow | undefined;
+let stateStore: StateStore | undefined;
 let workspaceManager: WorkspaceManager | undefined;
 let automation: AutomationEngine | undefined;
 let localApi: AutomationApiServer | undefined;
 let disposeIpc: (() => void) | undefined;
 
 app.setAppUserModelId("ai.orbitdesk.studio");
+// HTTP/3 can bypass or conflict with local system-proxy VPN clients. HTTPS remains enabled over TCP.
+app.commandLine.appendSwitch("disable-quic");
 
 app.whenReady().then(async () => {
   const preloadPath = join(currentDirectory, "../preload/index.cjs");
   const rendererEntry = process.env.VITE_DEV_SERVER_URL ?? join(currentDirectory, "../../dist/index.html");
-  const store = new StateStore(
+  stateStore = new StateStore(
     join(app.getPath("userData"), "orbitdesk-state.json"),
     join(app.getPath("downloads"), "OrbitDesk"),
   );
+  const store = stateStore;
   const downloads = new DownloadManager(store);
   const library = new LibraryManager(store, join(app.getPath("userData"), "library"));
   workspaceManager = new WorkspaceManager(store, downloads, preloadPath, rendererEntry);
@@ -82,6 +86,7 @@ app.on("before-quit", () => {
   void localApi?.stop();
   disposeIpc?.();
   workspaceManager?.closeAll();
+  stateStore?.flush();
 });
 
 function createController(preloadPath: string): BrowserWindow {

@@ -29,6 +29,10 @@ const commonBlockedLabels = [
   "captcha",
   "verify you are human",
   "rate limit",
+  "受区域限制",
+  "无法使用 dola",
+  "not available in your region",
+  "region restricted",
 ];
 
 export const siteAdapters: Record<SiteId, SiteAdapter> = {

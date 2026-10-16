@@ -6,6 +6,7 @@ import type {
   AdapterProbe,
   BrowserBounds,
   BrowserCommand,
+  NetworkDiagnostics,
   PageActionResult,
   Workspace,
   WorkspaceEvent,
@@ -91,6 +92,8 @@ export class WorkspaceManager extends EventEmitter {
     this.#store.patchWorkspace(workspaceId, { status: "opening", lastError: undefined });
     const persistentSession = this.#sessionFor(workspace);
     await this.#applyProxyToSession(workspace, persistentSession);
+    await persistentSession.clearHostResolverCache();
+    await persistentSession.closeAllConnections();
     persistentSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     persistentSession.setPermissionCheckHandler(() => false);
 
@@ -156,9 +159,43 @@ export class WorkspaceManager extends EventEmitter {
     const workspace = this.#store.getWorkspace(workspaceId);
     const persistentSession = this.#sessionFor(workspace);
     await this.#applyProxyToSession(workspace, persistentSession);
+    await persistentSession.clearHostResolverCache();
     await persistentSession.closeAllConnections();
     const runtime = this.#runtimes.get(workspaceId);
-    if (runtime) await runtime.view.webContents.reload();
+    if (runtime) {
+      if (workspace.siteId === "demo") runtime.view.webContents.reload();
+      else await runtime.view.webContents.loadURL(workspace.startUrl);
+    }
+  }
+
+  async diagnoseNetwork(workspaceId: string): Promise<NetworkDiagnostics> {
+    const workspace = this.#store.getWorkspace(workspaceId);
+    const persistentSession = this.#sessionFor(workspace);
+    await this.#applyProxyToSession(workspace, persistentSession);
+    const resolvedProxy = await persistentSession.resolveProxy(workspace.startUrl);
+    const runtime = this.#runtimes.get(workspaceId);
+    const currentUrl = runtime?.view.webContents.getURL();
+    const regionRestricted = runtime
+      ? await runtime.view.webContents.executeJavaScript(regionRestrictionScript, true).then(Boolean).catch(() => false)
+      : false;
+    let message = `当前 Chromium 路由：${resolvedProxy || "DIRECT"}`;
+    if (regionRestricted) {
+      message = `Dola 已返回区域限制。当前 Chromium 路由为 ${resolvedProxy || "DIRECT"}；请更换受支持地区的 VPN 节点后重新加载。`;
+    } else if (workspace.proxy.mode === "system" && /^DIRECT$/i.test(resolvedProxy)) {
+      message = "Electron 当前没有检测到 Windows 系统代理。如果 VPN 使用本机代理端口，请在实例设置中选择“固定代理”并填写 HTTP/SOCKS5 地址。";
+    } else if (workspace.proxy.mode === "direct") {
+      message = "该实例正在强制直连，会绕过 Windows 系统代理。若要使用 VPN，请切换为“跟随 Windows 系统/VPN”。";
+    }
+    return {
+      workspaceId,
+      configuredMode: workspace.proxy.mode,
+      ...(workspace.proxy.server ? { configuredServer: workspace.proxy.server } : {}),
+      resolvedProxy: resolvedProxy || "DIRECT",
+      ...(currentUrl ? { currentUrl } : {}),
+      regionRestricted,
+      message,
+      checkedAt: new Date().toISOString(),
+    };
   }
 
   setBounds(workspaceId: string, bounds: BrowserBounds): void {
@@ -273,9 +310,15 @@ export class WorkspaceManager extends EventEmitter {
 
   async #applyProxyToSession(workspace: Workspace, persistentSession: Electron.Session): Promise<void> {
     if (workspace.proxy.mode === "fixed_servers" && workspace.proxy.server) {
-      await persistentSession.setProxy({ proxyRules: workspace.proxy.server, proxyBypassRules: workspace.proxy.bypassRules || "<-loopback>" });
-    } else {
+      await persistentSession.setProxy({
+        mode: "fixed_servers",
+        proxyRules: workspace.proxy.server,
+        proxyBypassRules: workspace.proxy.bypassRules || "<local>;localhost;127.0.0.1;[::1]",
+      });
+    } else if (workspace.proxy.mode === "direct") {
       await persistentSession.setProxy({ mode: "direct" });
+    } else {
+      await persistentSession.setProxy({ mode: "system" });
     }
   }
 
@@ -312,6 +355,7 @@ export class WorkspaceManager extends EventEmitter {
       this.#emit(workspace.id, "url", currentUrl);
       this.#emit(workspace.id, "title", contents.getTitle());
       this.#emit(workspace.id, "status", "官方网页已就绪，请手动登录或开始任务");
+      void this.#flagRegionRestriction(workspace, runtime);
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription) => {
       if (errorCode === -3) return;
@@ -330,6 +374,18 @@ export class WorkspaceManager extends EventEmitter {
       this.#runtimes.delete(workspace.id);
       this.#store.patchWorkspace(workspace.id, { status: "offline" });
     });
+  }
+
+  async #flagRegionRestriction(workspace: Workspace, runtime: WorkspaceRuntime): Promise<void> {
+    if (workspace.siteId !== "dola") return;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    if (this.#runtimes.get(workspace.id) !== runtime || runtime.view.webContents.isDestroyed()) return;
+    const restricted = await runtime.view.webContents.executeJavaScript(regionRestrictionScript, true).then(Boolean).catch(() => false);
+    if (!restricted) return;
+    const diagnostic = await this.diagnoseNetwork(workspace.id).catch(() => undefined);
+    const message = diagnostic?.message ?? "Dola 返回区域限制；请检查实例代理和 VPN 出口地区";
+    this.#store.patchWorkspace(workspace.id, { status: "needs_attention", lastError: message });
+    this.#emit(workspace.id, "status", message);
   }
 
   #emit(workspaceId: string, type: WorkspaceEvent["type"], value: string): void {
@@ -371,6 +427,15 @@ export async function loadRenderer(window: BrowserWindow, rendererEntry: string,
     await window.loadFile(rendererEntry, query ? { query } : undefined);
   }
 }
+
+const regionRestrictionScript = `(() => {
+  const text = String(document.body?.innerText || "").replace(/\\s+/g, " ").toLowerCase();
+  return location.pathname.includes("region-restricted")
+    || text.includes("受区域限制")
+    || text.includes("无法使用 dola")
+    || text.includes("not available in your region")
+    || text.includes("region restricted");
+})()`;
 
 function isSafeWebNavigation(rawUrl: string): boolean {
   try {

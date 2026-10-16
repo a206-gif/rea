@@ -1,4 +1,4 @@
-# OrbitDesk AI Studio 0.3
+# OrbitDesk AI Studio 0.3.1
 
 OrbitDesk is a **clean-room**, Windows-first Electron desktop application for managing isolated browser instances and authorized AI-generation workflows on the official Doubao and Dola websites. It does not reuse proprietary source code, assets, extension packages, protocol handlers, branding, or private service behavior from the analyzed application.
 
@@ -9,7 +9,9 @@ OrbitDesk is a **clean-room**, Windows-first Electron desktop application for ma
 - Ordered, grouped browser-instance catalog with independently persistent Electron `persist:` partitions.
 - Real `https://www.doubao.com/` and `https://www.dola.com/chat/` navigation in sandboxed `WebContentsView` surfaces.
 - Manual login on the official site; OrbitDesk does not collect passwords.
-- Per-instance start URL and direct, HTTP(S), SOCKS4, or SOCKS5 proxy rules.
+- Per-instance start URL and Windows-system/VPN, direct, HTTP(S), SOCKS4, or SOCKS5 proxy rules. System/VPN routing is the safe default.
+- Built-in network diagnostics show Chromium's resolved route (`DIRECT`, `PROXY`, or `SOCKS`) without contacting an additional IP lookup service.
+- Dola region-restriction pages are detected and surfaced as an actionable instance warning instead of a false “ready” state.
 - Explicit JSON Cookie import/export for account owners migrating their own session. Cookie domains are restricted to the selected adapter's official allowlist.
 - Back, forward, reload, home, popup restriction, navigation allowlists, isolated cache, and persistent cookies.
 
@@ -96,6 +98,14 @@ Electron main process
     ├── AutomationApiServer    authenticated loopback-only, least-privilege API
     └── site adapters          official hosts, visible selectors and labels
 ```
+
+## VPN and performance notes
+
+- Version 0.3.1 migrates the old implicit `direct` setting to **跟随 Windows 系统/VPN**. An explicitly selected direct mode in the new schema remains direct.
+- If diagnostics report `DIRECT` while a proxy-style VPN is enabled, turn on the VPN client's Windows system-proxy option or enter its local HTTP/SOCKS5 listening address as a fixed instance proxy.
+- If diagnostics show a proxy route but Dola still returns a region-restriction page, Dola is rejecting the VPN exit region or account context. OrbitDesk reports that state but does not bypass the site's regional policy.
+- QUIC is disabled so Chromium traffic does not sidestep or conflict with common local proxy clients; HTTPS continues over TCP.
+- High-frequency download/progress updates are coalesced: renderer broadcasts are limited to roughly 10 per second and disk persistence to roughly 2 writes per second, with a synchronous flush on shutdown.
 
 ## Development
 
