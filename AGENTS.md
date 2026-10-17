@@ -8,7 +8,7 @@ Follow the [contribution scope and fail-closed integration rule](CONTRIBUTING.md
 
 Ghidra uses ephemeral databases without modifying executable bytes or controlling a GUI; Windows Ghidra P0 has no mutation authority. IDA analysis is read-only; never save or close an attached GUI database.
 
-Configuration changes must be additive and idempotent, with backups. Installers must not install or upgrade unrelated software, including Homebrew, Node.js, npm, Java, or Ghidra. Ghidra and IDA are bring-your-own. `rea setup` must show its planned changes and require approval before writing files or installing Hopper.
+Configuration changes must be additive and idempotent, with backups. Published installers and `rea setup` must not install or upgrade unrelated system software, including Homebrew, Node.js, npm, Java, or Ghidra. Ghidra and IDA are normally bring-your-own. This fork's explicitly selected `npm run rea:bootstrap:full` workflow may download only the checksum-pinned official Eclipse Temurin and Ghidra assets declared in `config/repository-toolchain.json`, and only into the ignored repository `.cache`; it must not perform a system/global installation or require administrator access. `rea setup` must show its planned changes and require approval before writing files or installing Hopper.
 
 Preserve caller-selected inputs and local evidence, including output, URLs, paths, digests, and metadata. Redact transport authentication credentials and explicitly marked sensitive values; do not infer secrecy from names or text patterns. Do not persist the ambient environment merely because a child inherits it.
 
@@ -16,13 +16,14 @@ Preserve caller-selected inputs and local evidence, including output, URLs, path
 
 Use this checkout as the REA installation. Do not run `npx rea-agents@latest`, install REA globally, or repeat interactive `rea setup` merely to use the repository's own CLI, MCP server, or tracked skill.
 
-- Run `npm run rea:status` to inspect readiness without changing the checkout.
-- Run `npm run rea:bootstrap` once in a fresh environment. It idempotently restores locked npm dependencies and builds ignored runtime/skill outputs; it does not edit client configuration or install host software.
-- Run CLI commands as `npm run rea:local -- <arguments>` and health checks as `npm run rea:doctor -- <arguments>`.
-- Start the repository MCP server with `npm run rea:mcp`; obtain an absolute client entry with `npm run rea:mcp-config -- --json`. Bootstrap before connecting a client so its startup timeout is not spent installing dependencies, then restart or reconnect the client.
+- Run `npm run rea:status` to inspect core, Java, and Ghidra readiness without changing the checkout.
+- Run `npm run rea:bootstrap:full` once in a fresh environment. It idempotently restores locked npm dependencies, builds ignored runtime/skill outputs, and provisions the checksum-pinned official Eclipse Temurin JDK and Ghidra releases into `.cache/rea-toolchain/`. It does not edit client configuration, perform global installation, or require administrator access.
+- For a binary, `npm run rea:analyze -- /absolute/path/to/target --json` is the single-command path: it completes the full bootstrap and then invokes REA with Ghidra selected by default.
+- Run other CLI commands as `npm run rea:local -- <arguments>` and health checks as `npm run rea:doctor -- <arguments>`; they automatically receive the repository toolchain environment after provisioning.
+- Start the repository MCP server with `npm run rea:mcp`; obtain an absolute client entry with `npm run rea:mcp-config -- --json`. Complete the full bootstrap before connecting a client so its startup timeout is not spent downloading or compiling, then restart or reconnect the client.
 - Read the tracked skill at `.agents/skills/reverse-engineer-anything/SKILL.md`. Generated `skills/` content is an ignored build output, not the source of truth.
 
-An already-running agent session cannot dynamically acquire MCP tools just because files exist in the checkout. Agents without MCP registration can invoke the repository-local CLI through their shell. Java, Ghidra, Hopper, IDA, JADX, adb, and other native/provider runtimes remain host prerequisites and must not be vendored or silently installed. See [docs/repository-local-rea.md](docs/repository-local-rea.md) for the portability boundary and examples.
+An already-running agent session cannot dynamically acquire MCP tools just because files exist in the checkout. Agents without MCP registration can invoke the repository-local CLI through their shell. The full bootstrap handles Java and Ghidra; Hopper, IDA, JADX, adb, and other optional provider runtimes remain host prerequisites and must not be vendored or silently installed. See [docs/repository-local-rea.md](docs/repository-local-rea.md) for the portability boundary and examples.
 
 ## Architecture and Cleanup
 

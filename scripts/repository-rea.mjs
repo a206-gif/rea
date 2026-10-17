@@ -15,6 +15,11 @@ import { constants as fsConstants } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import {
+  provisionRepositoryToolchain,
+  repositoryToolchainEnvironment,
+  repositoryToolchainStatus,
+} from "./repository-toolchain.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDirectory = join(repositoryRoot, ".cache");
@@ -58,7 +63,7 @@ try {
     if (jsonOutput)
       process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
     else printStatus(status);
-    process.exitCode = status.runtimeReady ? 0 : 1;
+    process.exitCode = status.runtimeReady && status.toolchain.ready ? 0 : 1;
   } else if (command === "config") {
     const config = repositoryMcpConfiguration();
     if (jsonOutput)
@@ -70,26 +75,57 @@ try {
   } else if (command === "bootstrap") {
     await bootstrap({ protocolSafe: false });
     printStatus(await repositoryStatus());
+  } else if (command === "bootstrap-full") {
+    await bootstrap({ protocolSafe: false });
+    await provisionRepositoryToolchain({ logStream: process.stdout });
+    const environment = await repositoryToolchainEnvironment();
+    printStatus(await repositoryStatus());
+    await runChecked(
+      process.execPath,
+      [dispatcherPath, "doctor", "--provider", "ghidra"],
+      false,
+      environment,
+    );
+  } else if (command === "analyze") {
+    await bootstrap({ protocolSafe: true });
+    await provisionRepositoryToolchain({ logStream: process.stderr });
+    const environment = await repositoryToolchainEnvironment();
+    const analysisArguments = ["analyze", ...forwardedArguments];
+    if (!hasProviderSelection(forwardedArguments)) {
+      analysisArguments.push("--provider", "ghidra");
+    }
+    process.exitCode = await run(
+      process.execPath,
+      [dispatcherPath, ...analysisArguments],
+      false,
+      environment,
+    );
   } else if (command === "run") {
     await bootstrap({ protocolSafe: true });
+    const environment = await repositoryToolchainEnvironment();
     process.exitCode = await run(
       process.execPath,
       [dispatcherPath, ...forwardedArguments],
       false,
+      environment,
     );
   } else if (command === "doctor") {
     await bootstrap({ protocolSafe: true });
+    const environment = await repositoryToolchainEnvironment();
     process.exitCode = await run(
       process.execPath,
       [dispatcherPath, "doctor", ...forwardedArguments],
       false,
+      environment,
     );
   } else if (command === "mcp") {
     await bootstrap({ protocolSafe: true });
+    const environment = await repositoryToolchainEnvironment();
     process.exitCode = await run(
       process.execPath,
       [dispatcherPath, "mcp"],
       false,
+      environment,
     );
   } else {
     throw new Error(
@@ -182,6 +218,7 @@ async function repositoryStatus() {
     state?.packageLockSha256 === packageLockSha256 &&
     state?.sourceSha256 === sourceSha256,
   );
+  const toolchain = await repositoryToolchainStatus();
   return {
     repositoryRoot,
     packageVersion: await packageVersion(),
@@ -193,10 +230,11 @@ async function repositoryStatus() {
     runtimeFilesReady,
     runtimeReady,
     bootstrapState: state,
+    toolchain,
     mcp: repositoryMcpConfiguration(),
     externalProviders: {
       bundled: false,
-      note: "Ghidra, Java, Hopper, IDA, JADX, adb, and other provider runtimes remain host prerequisites and are not committed to this repository.",
+      note: "Pinned Eclipse Temurin and Ghidra releases can be provisioned into the ignored repository cache with rea:bootstrap:full. Hopper, IDA, JADX, adb, and other providers remain host prerequisites.",
     },
   };
 }
@@ -206,7 +244,7 @@ function repositoryMcpConfiguration() {
     command: process.execPath,
     args: [join(repositoryRoot, "scripts", "repository-rea.mjs"), "mcp"],
     cwd: repositoryRoot,
-    note: "Run `npm run rea:bootstrap` once before starting an MCP client in a fresh checkout, then restart or reconnect that client.",
+    note: "Run `npm run rea:bootstrap:full` once before starting an MCP client in a fresh checkout, then restart or reconnect that client.",
   };
 }
 
@@ -225,16 +263,22 @@ function printStatus(status) {
     `  Built runtime: ${status.runtimeFilesReady ? "present" : "missing"}\n`,
   );
   process.stdout.write(
-    `  Overall:       ${status.runtimeReady ? "ready" : "bootstrap required"}\n`,
+    `  Core runtime:  ${status.runtimeReady ? "ready" : "bootstrap required"}\n`,
   );
   process.stdout.write(
-    "  Native tools:  host prerequisites; not vendored in Git\n",
+    `  Java/Ghidra:   ${status.toolchain.ready ? "ready" : "full bootstrap required"}\n`,
+  );
+  process.stdout.write(
+    `  Full analysis: ${status.runtimeReady && status.toolchain.ready ? "ready" : "full bootstrap required"}\n`,
+  );
+  process.stdout.write(
+    "  Other tools:   host prerequisites; not vendored in Git\n",
   );
 }
 
 function printHelp() {
   process.stdout.write(
-    `Repository-local REA launcher\n\nUsage:\n  node scripts/repository-rea.mjs status [--json]\n  node scripts/repository-rea.mjs bootstrap\n  node scripts/repository-rea.mjs run -- <rea arguments...>\n  node scripts/repository-rea.mjs doctor -- <doctor arguments...>\n  node scripts/repository-rea.mjs mcp\n  node scripts/repository-rea.mjs config [--json]\n\nRecommended npm aliases:\n  npm run rea:status\n  npm run rea:bootstrap\n  npm run rea:local -- --help\n  npm run rea:doctor -- --json\n  npm run rea:mcp\n\nThe bootstrap installs only this checkout's locked npm dependencies and builds ignored outputs.\nIt does not install REA globally, edit agent configuration, or install native providers.\n`,
+    `Repository-local REA launcher\n\nUsage:\n  node scripts/repository-rea.mjs status [--json]\n  node scripts/repository-rea.mjs bootstrap\n  node scripts/repository-rea.mjs bootstrap-full\n  node scripts/repository-rea.mjs analyze -- <target and rea arguments...>\n  node scripts/repository-rea.mjs run -- <rea arguments...>\n  node scripts/repository-rea.mjs doctor -- <doctor arguments...>\n  node scripts/repository-rea.mjs mcp\n  node scripts/repository-rea.mjs config [--json]\n\nRecommended npm aliases:\n  npm run rea:status\n  npm run rea:bootstrap:full\n  npm run rea:analyze -- /absolute/path/to/target --json\n  npm run rea:local -- --help\n  npm run rea:doctor -- --json\n  npm run rea:mcp\n\nThe full bootstrap restores locked npm dependencies, builds ignored outputs, and downloads checksum-pinned official Eclipse Temurin and Ghidra releases into .cache.\nIt does not install REA or providers globally, require administrator access, or edit agent configuration.\n`,
   );
 }
 
@@ -376,19 +420,31 @@ function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-async function runChecked(executable, args, protocolSafe) {
-  const exitCode = await run(executable, args, protocolSafe);
+function hasProviderSelection(arguments_) {
+  return arguments_.some(
+    (argument) =>
+      argument === "--provider" || argument.startsWith("--provider="),
+  );
+}
+
+async function runChecked(
+  executable,
+  args,
+  protocolSafe,
+  environment = process.env,
+) {
+  const exitCode = await run(executable, args, protocolSafe, environment);
   if (exitCode !== 0)
     throw new Error(
       `${executable} ${args.join(" ")} exited with status ${exitCode}`,
     );
 }
 
-function run(executable, args, protocolSafe) {
+function run(executable, args, protocolSafe, environment = process.env) {
   return new Promise((resolvePromise, rejectPromise) => {
     const child = spawn(executable, args, {
       cwd: repositoryRoot,
-      env: process.env,
+      env: environment,
       stdio: protocolSafe
         ? ["inherit", process.stderr, process.stderr]
         : "inherit",

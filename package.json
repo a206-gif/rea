@@ -100,6 +100,8 @@
   "scripts": {
     "rea:status": "node scripts/repository-rea.mjs status",
     "rea:bootstrap": "node scripts/repository-rea.mjs bootstrap",
+    "rea:bootstrap:full": "node scripts/repository-rea.mjs bootstrap-full",
+    "rea:analyze": "node scripts/repository-rea.mjs analyze",
     "rea:local": "node scripts/repository-rea.mjs run",
     "rea:doctor": "node scripts/repository-rea.mjs doctor",
     "rea:mcp": "node scripts/repository-rea.mjs mcp",
