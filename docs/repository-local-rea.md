@@ -5,9 +5,24 @@ dispatcher, tracked agent skill, and a checksum-pinned Java/Ghidra toolchain
 manifest. An agent can prepare the complete environment without installing REA,
 Java, or Ghidra globally and without repeating interactive `rea setup`.
 
+## Arena: use one sentence
+
+The tracked `reverse-engineer-anything` skill maps natural-language requests to
+the repository launcher. In Arena, the user can say either:
+
+- **“一键搭建 REA 完整环境”** — the agent runs the complete setup without asking
+  the user to translate it into shell commands.
+- **“用 REA 逆向分析 `/absolute/path/to/target`”** — the agent completes any
+  missing setup and analyzes that exact target with Ghidra by default.
+
+The skill authorizes only the pinned repository-local downloads and the exact
+target named by the user. It does not broaden target-execution or system-change
+authority. If Arena blocks an official GitHub release-asset redirect, the agent
+must report that platform restriction rather than loop or claim success.
+
 ## One-command setup
 
-From the repository root:
+The shell action behind the first sentence is:
 
 ```bash
 npm run rea:bootstrap:full

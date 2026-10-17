@@ -14,7 +14,7 @@ Preserve caller-selected inputs and local evidence, including output, URLs, path
 
 ## Repository-local REA for Agents
 
-Use this checkout as the REA installation. Do not run `npx rea-agents@latest`, install REA globally, or repeat interactive `rea setup` merely to use the repository's own CLI, MCP server, or tracked skill.
+Use this checkout as the REA installation. Do not run `npx rea-agents@latest`, install REA globally, or repeat interactive `rea setup` merely to use the repository's own CLI, MCP server, or tracked skill. Follow the tracked skill's **Arena and repository-local fast path**: the sentence “一键搭建 REA 完整环境” authorizes running the full repository bootstrap, and “用 REA 逆向分析 <path>” authorizes the one-command bootstrap-and-analysis path for that exact target. Do not make the user translate those requests into shell commands.
 
 - Run `npm run rea:status` to inspect core, Java, and Ghidra readiness without changing the checkout.
 - Run `npm run rea:bootstrap:full` once in a fresh environment. It idempotently restores locked npm dependencies, builds ignored runtime/skill outputs, and provisions the checksum-pinned official Eclipse Temurin JDK and Ghidra releases into `.cache/rea-toolchain/`. It does not edit client configuration, perform global installation, or require administrator access.

@@ -1,8 +1,8 @@
 ---
 name: reverse-engineer-anything
-description: Reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets with REA. Use shipped-artifact or requested runtime evidence to explain features, compare versions, decompile code, or guide a reconstruction. Skip REA for ordinary source-repository architecture analysis.
+description: Set up and use repository-local REA from Arena, then reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets. Use for one-command REA environment bootstrap, shipped-artifact or requested runtime evidence, decompilation, version comparison, or reconstruction guidance. Skip REA for ordinary source-repository architecture analysis.
 metadata:
-  version: "42"
+  version: "43"
 ---
 
 # REA
@@ -12,6 +12,43 @@ passive application runtime evidence, or comparison with
 behavior not established by available source. For ordinary analysis of a
 complete source repository, use normal repository tools and do not run REA
 readiness or provider commands.
+
+## Arena and repository-local fast path
+
+When the current checkout is the REA source repository (its `package.json` name
+is `rea-agents` and `scripts/repository-rea.mjs` exists), use this checkout as
+the installation. This section takes priority over the published-package `npx`
+recovery instructions below. Do not download another REA release, install REA
+globally, or run interactive `rea setup`.
+
+Treat either of these user sentences as sufficient authorization for the named,
+repository-local action; do not ask them to repeat commands manually:
+
+- “一键搭建 REA 完整环境” / “set up the complete REA environment”: run
+  `npm run rea:bootstrap:full` from the repository root. This restores locked
+  dependencies, builds REA, downloads and verifies the pinned official Eclipse
+  Temurin JDK and Ghidra archives, extracts them under ignored `.cache/`, and
+  runs the Ghidra-scoped doctor check.
+- “用 REA 逆向分析 <path>” / “analyze <path> with REA”: resolve the exact
+  caller-supplied path, then run
+  `npm run rea:analyze -- <absolute-path> --json`. This same command completes
+  any missing full bootstrap and selects Ghidra by default. Preserve additional
+  caller arguments and never substitute a different target.
+
+For other operations, use `npm run rea:local -- <rea arguments>`; use
+`npm run rea:doctor -- --provider ghidra --json` for focused diagnostics. Once
+the full bootstrap has completed, these launchers inject the repository's
+`JAVA_HOME` and `GHIDRA_INSTALL_DIR` automatically. Agents that cannot reload
+MCP can perform the complete workflow through these shell commands. An MCP
+client must run the full bootstrap first, register the entry printed by
+`npm run --silent rea:mcp-config -- --json`, and reconnect.
+
+A setup sentence authorizes only the pinned downloads and ignored local writes
+documented in `config/repository-toolchain.json`; it does not authorize target
+execution, unrelated provider installation, system/global changes, or analysis
+of an unspecified target. If Arena blocks GitHub's release-asset redirect, do
+not retry in a loop or claim readiness: report the blocked host and exact
+failure. The skill cannot bypass an Arena network policy.
 
 ## Connect only when needed
 
