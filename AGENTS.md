@@ -12,6 +12,18 @@ Configuration changes must be additive and idempotent, with backups. Installers 
 
 Preserve caller-selected inputs and local evidence, including output, URLs, paths, digests, and metadata. Redact transport authentication credentials and explicitly marked sensitive values; do not infer secrecy from names or text patterns. Do not persist the ambient environment merely because a child inherits it.
 
+## Repository-local REA for Agents
+
+Use this checkout as the REA installation. Do not run `npx rea-agents@latest`, install REA globally, or repeat interactive `rea setup` merely to use the repository's own CLI, MCP server, or tracked skill.
+
+- Run `npm run rea:status` to inspect readiness without changing the checkout.
+- Run `npm run rea:bootstrap` once in a fresh environment. It idempotently restores locked npm dependencies and builds ignored runtime/skill outputs; it does not edit client configuration or install host software.
+- Run CLI commands as `npm run rea:local -- <arguments>` and health checks as `npm run rea:doctor -- <arguments>`.
+- Start the repository MCP server with `npm run rea:mcp`; obtain an absolute client entry with `npm run rea:mcp-config -- --json`. Bootstrap before connecting a client so its startup timeout is not spent installing dependencies, then restart or reconnect the client.
+- Read the tracked skill at `.agents/skills/reverse-engineer-anything/SKILL.md`. Generated `skills/` content is an ignored build output, not the source of truth.
+
+An already-running agent session cannot dynamically acquire MCP tools just because files exist in the checkout. Agents without MCP registration can invoke the repository-local CLI through their shell. Java, Ghidra, Hopper, IDA, JADX, adb, and other native/provider runtimes remain host prerequisites and must not be vendored or silently installed. See [docs/repository-local-rea.md](docs/repository-local-rea.md) for the portability boundary and examples.
+
 ## Architecture and Cleanup
 
 Dependencies flow inward: domain semantics and contracts, provider adapters, shared application workflows, then CLI/MCP adapters. Keep engine protocols and provider-specific code out of domain/application layers. See [docs/architecture.mermaid](docs/architecture.mermaid) when changing composition.

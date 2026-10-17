@@ -98,6 +98,12 @@
     "licenses"
   ],
   "scripts": {
+    "rea:status": "node scripts/repository-rea.mjs status",
+    "rea:bootstrap": "node scripts/repository-rea.mjs bootstrap",
+    "rea:local": "node scripts/repository-rea.mjs run",
+    "rea:doctor": "node scripts/repository-rea.mjs doctor",
+    "rea:mcp": "node scripts/repository-rea.mjs mcp",
+    "rea:mcp-config": "node scripts/repository-rea.mjs config",
     "release:notes": "node scripts/release-notes.mjs",
     "deps:check": "node scripts/check-dependency-install.mjs",
     "metadata:generate": "node scripts/run-exclusive.mjs artifacts node scripts/generate-package-metadata.mjs",
